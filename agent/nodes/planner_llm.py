@@ -54,9 +54,9 @@ PLANNER_USER_TEMPLATE = """Brief: {brief}
 Brand: {brand_name}, primary color: {primary_color}, CTA: "{outro_cta}"
 Platform: {platform}, Duration: {duration_sec}s, Language: {language}
 Tone: {style_tone}
-Feedback (if any): {feedback}
+User feedback / modification request: {feedback}
 Similar past projects (for reference): {similar_projects}
-
+{existing_plan_block}
 Generate the plan JSON now."""
 
 
@@ -76,6 +76,15 @@ def planner_llm(state: dict[str, Any]) -> dict[str, Any]:
 
     similar_str = json.dumps([s.get("document", "") for s in similar[:2]], ensure_ascii=False)
 
+    existing_plan = state.get("plan")
+    if feedback and existing_plan:
+        existing_plan_block = (
+            f"Current plan to modify (apply the feedback above to THIS plan):\n"
+            f"{json.dumps(existing_plan, ensure_ascii=False, indent=2)}"
+        )
+    else:
+        existing_plan_block = ""
+
     user_msg = PLANNER_USER_TEMPLATE.format(
         brief=state.get("brief", ""),
         brand_name=brand_kit.get("name", brand_kit.get("brand_id", "Brand")),
@@ -87,6 +96,7 @@ def planner_llm(state: dict[str, Any]) -> dict[str, Any]:
         style_tone=", ".join(style_tone) if isinstance(style_tone, list) else style_tone,
         feedback=feedback or "None",
         similar_projects=similar_str,
+        existing_plan_block=existing_plan_block,
     )
 
     plan_dict: dict[str, Any] | None = None

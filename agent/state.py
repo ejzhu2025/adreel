@@ -43,6 +43,14 @@ class AgentState(TypedDict, total=False):
     output_path: str
     summary: str
 
+    # ── Partial re-render ─────────────────────────────────────────────────────
+    change_type: str                    # "global" | "local"
+    affected_shot_indices: list[int]    # 0-based shot indices to re-render
+    shot_updates: dict[str, Any]        # str(idx) -> {desc, text_overlay}
+
+    # ── Generation quality ────────────────────────────────────────────────────
+    quality: str                        # "turbo" | "hd"
+
     # ── Control ───────────────────────────────────────────────────────────────
     needs_replan: bool
     error: Optional[str]

@@ -1,23 +1,35 @@
-"""fal.ai T2V wrapper — wan/v2.1/t2v-1.3b (turbo)."""
+"""fal.ai T2V wrapper — supports turbo (1.3B) and hd (14B) quality tiers."""
 import os
 from pathlib import Path
 
 import fal_client
 import httpx
 
-_MODEL = os.getenv("FAL_T2V_MODEL", "fal-ai/wan/v2.2-a14b/text-to-video")
-_NUM_FRAMES = 81  # always 5s @ 16fps — never generate longer clips
+# Quality presets — both use wan/v2.2-a14b, turbo uses fewer frames for speed
+_QUALITY_PRESETS = {
+    "turbo": {
+        "model": os.getenv("FAL_T2V_MODEL", "fal-ai/wan/v2.2-a14b/text-to-video"),
+        "num_frames": 33,   # ~2s @ 16fps — fast/cheap preview (min supported: 17)
+        "resolution": "480p",
+    },
+    "hd": {
+        "model": os.getenv("FAL_T2V_MODEL", "fal-ai/wan/v2.2-a14b/text-to-video"),
+        "num_frames": 81,   # ~5s @ 16fps — full quality
+        "resolution": "720p",
+    },
+}
 
 
-def generate_clip(prompt: str, output_path: str, duration: float = 3.5) -> str:
-    """Call T2V (1.3B turbo), download result to output_path. Returns output_path."""
+def generate_clip(prompt: str, output_path: str, duration: float = 3.5, quality: str = "turbo") -> str:
+    """Call T2V, download result to output_path. quality='turbo'|'hd'."""
+    preset = _QUALITY_PRESETS.get(quality, _QUALITY_PRESETS["turbo"])
     result = fal_client.run(
-        _MODEL,
+        preset["model"],
         arguments={
             "prompt": prompt,
-            "num_frames": _NUM_FRAMES,
+            "num_frames": preset["num_frames"],
             "frames_per_second": 16,
-            "resolution": "480p",
+            "resolution": preset["resolution"],
             "aspect_ratio": "9:16",
         },
     )

@@ -46,6 +46,8 @@ def executor_pipeline(state: dict[str, Any]) -> dict[str, Any]:
             storyboard = plan.get("storyboard", [])
             style_tone = state.get("clarification_answers", {}).get("style_tone", ["fresh"])
 
+            quality = state.get("quality", "turbo")
+
             def _process_shot(args: tuple[int, dict]) -> dict:
                 i, shot = args
                 scene = storyboard[i] if i < len(storyboard) else {}
@@ -58,7 +60,7 @@ def executor_pipeline(state: dict[str, Any]) -> dict[str, Any]:
                 raw_path = str(work_dir / f"{shot['shot_id']}_raw.mp4")
                 clip_path = str(work_dir / f"{shot['shot_id']}.mp4")
                 duration = float(shot.get("duration", 3.5))
-                generate_clip(prompt, raw_path, duration=duration)
+                generate_clip(prompt, raw_path, duration=duration, quality=quality)
                 fc.trim_and_scale_clip(raw_path, clip_path, duration=duration)
                 return {"shot_id": shot["shot_id"], "clip_path": clip_path, "duration": duration}
 

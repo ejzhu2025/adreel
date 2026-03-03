@@ -6,6 +6,8 @@ from typing import Any
 from langgraph.graph import StateGraph, END
 
 from agent.state import AgentState
+from agent.nodes.change_classifier import change_classifier
+from agent.nodes.partial_executor import partial_executor
 from agent.nodes.intent_parser import intent_parser
 from agent.nodes.memory_loader import memory_loader
 from agent.nodes.clarification_planner import clarification_planner
@@ -112,6 +114,150 @@ def build_graph() -> Any:
         _route_qc_diagnose,
         {END: END, "layout_branding": "layout_branding", "render_export": "render_export"},
     )
+
+    return workflow.compile()
+
+
+# ── Plan-only graph (used by /api/projects/{id}/plan) ─────────────────────────
+
+def _route_plan_checker_plan_only(state: dict[str, Any]) -> str:
+    if state.get("needs_replan") and state.get("plan_version", 1) < 3:
+        return "planner_llm"
+    return END
+
+
+def build_plan_only_graph() -> Any:
+    """Runs planning steps only: intent_parser → … → plan_checker → END."""
+    workflow = StateGraph(AgentState)
+
+    workflow.add_node("intent_parser", intent_parser)
+    workflow.add_node("memory_loader", memory_loader)
+    workflow.add_node("clarification_planner", clarification_planner)
+    workflow.add_node("ask_user", ask_user)
+    workflow.add_node("planner_llm", planner_llm)
+    workflow.add_node("plan_checker", plan_checker)
+
+    workflow.set_entry_point("intent_parser")
+
+    workflow.add_edge("intent_parser", "memory_loader")
+    workflow.add_edge("memory_loader", "clarification_planner")
+    workflow.add_edge("ask_user", "planner_llm")
+    workflow.add_edge("planner_llm", "plan_checker")
+
+    workflow.add_conditional_edges(
+        "clarification_planner",
+        _route_clarification,
+        {"ask_user": "ask_user", "planner_llm": "planner_llm"},
+    )
+    workflow.add_conditional_edges(
+        "plan_checker",
+        _route_plan_checker_plan_only,
+        {"planner_llm": "planner_llm", END: END},
+    )
+
+    return workflow.compile()
+
+
+# ── Execute-only graph (used by /api/projects/{id}/execute) ───────────────────
+
+def build_execute_only_graph() -> Any:
+    """Runs execution steps only: executor_pipeline → … → memory_writer → END."""
+    workflow = StateGraph(AgentState)
+
+    workflow.add_node("executor_pipeline", executor_pipeline)
+    workflow.add_node("caption_agent", caption_agent)
+    workflow.add_node("layout_branding", layout_branding)
+    workflow.add_node("quality_gate", quality_gate)
+    workflow.add_node("qc_diagnose", qc_diagnose)
+    workflow.add_node("render_export", render_export)
+    workflow.add_node("result_summarizer", result_summarizer)
+    workflow.add_node("memory_writer", memory_writer)
+
+    workflow.set_entry_point("executor_pipeline")
+
+    workflow.add_edge("executor_pipeline", "caption_agent")
+    workflow.add_edge("caption_agent", "layout_branding")
+    workflow.add_edge("layout_branding", "quality_gate")
+    workflow.add_edge("render_export", "result_summarizer")
+    workflow.add_edge("result_summarizer", "memory_writer")
+    workflow.add_edge("memory_writer", END)
+
+    workflow.add_conditional_edges(
+        "quality_gate",
+        _route_quality_gate,
+        {"qc_diagnose": "qc_diagnose", "render_export": "render_export"},
+    )
+    workflow.add_conditional_edges(
+        "qc_diagnose",
+        _route_qc_diagnose,
+        {END: END, "layout_branding": "layout_branding", "render_export": "render_export"},
+    )
+
+    return workflow.compile()
+
+
+# ── Partial re-render graph (used by /modify endpoint) ───────────────────────
+
+def _route_change_classifier(state: dict[str, Any]) -> str:
+    if state.get("change_type") == "local":
+        return "partial_executor"
+    return "planner_llm"
+
+
+def build_partial_rerender_graph() -> Any:
+    """Smart modify: change_classifier → local→partial_executor or global→planner_llm."""
+    workflow = StateGraph(AgentState)
+
+    workflow.add_node("change_classifier", change_classifier)
+    workflow.add_node("partial_executor", partial_executor)
+    workflow.add_node("planner_llm", planner_llm)
+    workflow.add_node("plan_checker", plan_checker)
+    workflow.add_node("executor_pipeline", executor_pipeline)
+    workflow.add_node("caption_agent", caption_agent)
+    workflow.add_node("layout_branding", layout_branding)
+    workflow.add_node("quality_gate", quality_gate)
+    workflow.add_node("qc_diagnose", qc_diagnose)
+    workflow.add_node("render_export", render_export)
+    workflow.add_node("result_summarizer", result_summarizer)
+    workflow.add_node("memory_writer", memory_writer)
+
+    workflow.set_entry_point("change_classifier")
+
+    # Classifier branches
+    workflow.add_conditional_edges(
+        "change_classifier",
+        _route_change_classifier,
+        {"partial_executor": "partial_executor", "planner_llm": "planner_llm"},
+    )
+
+    # Global path: full replan then execute
+    workflow.add_edge("planner_llm", "plan_checker")
+    workflow.add_conditional_edges(
+        "plan_checker",
+        _route_plan_checker,
+        {"planner_llm": "planner_llm", "executor_pipeline": "executor_pipeline"},
+    )
+    workflow.add_edge("executor_pipeline", "caption_agent")
+
+    # Local path: partial re-render
+    workflow.add_edge("partial_executor", "caption_agent")
+
+    # Shared tail
+    workflow.add_edge("caption_agent", "layout_branding")
+    workflow.add_edge("layout_branding", "quality_gate")
+    workflow.add_conditional_edges(
+        "quality_gate",
+        _route_quality_gate,
+        {"qc_diagnose": "qc_diagnose", "render_export": "render_export"},
+    )
+    workflow.add_conditional_edges(
+        "qc_diagnose",
+        _route_qc_diagnose,
+        {END: END, "layout_branding": "layout_branding", "render_export": "render_export"},
+    )
+    workflow.add_edge("render_export", "result_summarizer")
+    workflow.add_edge("result_summarizer", "memory_writer")
+    workflow.add_edge("memory_writer", END)
 
     return workflow.compile()
 

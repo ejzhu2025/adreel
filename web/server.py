@@ -67,6 +67,25 @@ class FeedbackRequest(BaseModel):
     replan: bool = True
 
 
+class PlanRequest(BaseModel):
+    brief: str = ""
+    brand_id: str = "tong_sui"
+    user_id: str = "ej"
+    clarification_answers: dict = {}
+    plan_feedback: str = ""  # non-empty → replan from existing plan
+
+
+class ExecuteRequest(BaseModel):
+    plan: dict | None = None  # None → use DB-stored plan
+    clarification_answers: dict = {}
+    quality: str = "turbo"  # "turbo" | "hd"
+
+
+class ModifyRequest(BaseModel):
+    text: str
+    quality: str = ""  # empty → inherit from current plan's _quality
+
+
 # ── API endpoints ─────────────────────────────────────────────────────────────
 
 
@@ -216,6 +235,200 @@ async def run_project(
     return {"status": "started"}
 
 
+@app.post("/api/projects/{project_id}/plan")
+async def plan_project(
+    project_id: str, req: PlanRequest, background_tasks: BackgroundTasks
+):
+    """Run planning-only phase; stores plan in DB and sets status='planned'."""
+    proj = deps.db().get_project(project_id)
+    if not proj:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    from agent.graph import build_plan_only_graph
+
+    prefs = deps.db().get_user_prefs(proj["user_id"])
+    answers = req.clarification_answers or {
+        "platform": prefs.default_platform if prefs else "tiktok",
+        "duration_sec": prefs.preferred_duration_sec if prefs else 20,
+        "style_tone": prefs.tone if prefs else ["fresh"],
+        "language": "en",
+        "assets_available": "none",
+    }
+    brand_kit_obj = deps.db().get_brand_kit(proj["brand_id"])
+    # Load existing plan for replan case (feedback → modify existing plan)
+    existing_plan = proj.get("latest_plan_json") or {} if req.plan_feedback else {}
+    initial_state: dict = {
+        "project_id": project_id,
+        "brief": proj["brief"],
+        "brand_id": proj["brand_id"],
+        "user_id": proj["user_id"],
+        "messages": [],
+        "clarification_answers": answers,
+        "plan_version": existing_plan.get("version", 0) if existing_plan else 0,
+        "plan_feedback": req.plan_feedback,
+        "qc_attempt": 1,
+        "needs_replan": bool(req.plan_feedback),
+        "brand_kit": brand_kit_obj.model_dump() if brand_kit_obj else {},
+        "user_prefs": {},
+        "similar_projects": [],
+    }
+    if existing_plan:
+        initial_state["plan"] = existing_plan
+
+    queue: asyncio.Queue = asyncio.Queue()
+    _run_queues[project_id] = queue
+    _run_events[project_id] = []
+
+    def _on_plan_node(node_name: str, node_output: dict):
+        if node_name in ("planner_llm", "plan_checker"):
+            plan = node_output.get("plan")
+            if plan:
+                deps.db().update_project_plan(project_id, plan)
+                deps.db().update_project_status(project_id, "planned")
+
+    deps.db().update_project_status(project_id, "running")
+    background_tasks.add_task(
+        _run_agent_with_state,
+        project_id=project_id,
+        initial_state=initial_state,
+        queue=queue,
+        graph_fn=build_plan_only_graph,
+        replan=False,
+        on_node=_on_plan_node,
+    )
+    return {"status": "plan_started"}
+
+
+@app.post("/api/projects/{project_id}/execute")
+async def execute_project(
+    project_id: str, req: ExecuteRequest, background_tasks: BackgroundTasks
+):
+    """Run execution-only phase using stored or provided plan."""
+    proj = deps.db().get_project(project_id)
+    if not proj:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    from agent.graph import build_execute_only_graph
+
+    plan = req.plan or proj.get("latest_plan_json") or {}
+    if not plan:
+        raise HTTPException(status_code=400, detail="No plan found; run /plan first")
+
+    answers = req.clarification_answers or {
+        "platform": plan.get("platform", "tiktok"),
+        "duration_sec": plan.get("duration_sec", 20),
+        "style_tone": plan.get("style_tone", ["fresh"]),
+        "language": plan.get("language", "en"),
+        "assets_available": "none",
+    }
+    brand_kit_obj = deps.db().get_brand_kit(proj["brand_id"])
+    quality = req.quality if req.quality in ("turbo", "hd") else "turbo"
+    initial_state: dict = {
+        "project_id": project_id,
+        "brief": proj["brief"],
+        "brand_id": proj["brand_id"],
+        "user_id": proj["user_id"],
+        "messages": [],
+        "clarification_answers": answers,
+        "plan": plan,
+        "plan_version": plan.get("version", 1),
+        "qc_attempt": 1,
+        "needs_replan": False,
+        "brand_kit": brand_kit_obj.model_dump() if brand_kit_obj else {},
+        "user_prefs": {},
+        "similar_projects": [],
+        "quality": quality,
+    }
+
+    # Track quality in the stored plan so the frontend can show the upgrade button
+    def _on_execute_node(node_name: str, node_output: dict):
+        if node_name == "result_summarizer":
+            updated_plan = {**plan, "_quality": quality}
+            deps.db().update_project_plan(project_id, updated_plan)
+
+    queue: asyncio.Queue = asyncio.Queue()
+    _run_queues[project_id] = queue
+    _run_events[project_id] = []
+
+    deps.db().update_project_status(project_id, "running")
+    background_tasks.add_task(
+        _run_agent_with_state,
+        project_id=project_id,
+        initial_state=initial_state,
+        queue=queue,
+        graph_fn=build_execute_only_graph,
+        replan=False,
+        on_node=_on_execute_node,
+    )
+    return {"status": "execute_started", "quality": quality}
+
+
+@app.post("/api/projects/{project_id}/modify")
+async def modify_project(
+    project_id: str, req: ModifyRequest, background_tasks: BackgroundTasks
+):
+    """Smart modify: classify feedback → local (partial re-render) or global (full replan)."""
+    proj = deps.db().get_project(project_id)
+    if not proj:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    plan = proj.get("latest_plan_json") or {}
+    if not plan:
+        raise HTTPException(status_code=400, detail="No plan found; generate a video first")
+
+    from agent.graph import build_partial_rerender_graph
+
+    quality = req.quality if req.quality in ("turbo", "hd") else plan.get("_quality", "turbo")
+    answers = {
+        "platform": plan.get("platform", "tiktok"),
+        "duration_sec": plan.get("duration_sec", 20),
+        "style_tone": plan.get("style_tone", ["fresh"]),
+        "language": plan.get("language", "en"),
+        "assets_available": "none",
+    }
+    brand_kit_obj = deps.db().get_brand_kit(proj["brand_id"])
+    initial_state: dict = {
+        "project_id": project_id,
+        "brief": proj["brief"],
+        "brand_id": proj["brand_id"],
+        "user_id": proj["user_id"],
+        "messages": [],
+        "clarification_answers": answers,
+        "plan": plan,
+        "plan_version": plan.get("version", 1),
+        "plan_feedback": req.text,
+        "qc_attempt": 1,
+        "needs_replan": False,
+        "brand_kit": brand_kit_obj.model_dump() if brand_kit_obj else {},
+        "user_prefs": {},
+        "similar_projects": [],
+        "quality": quality,
+    }
+
+    def _on_modify_node(node_name: str, node_output: dict):
+        # Persist updated plan whenever partial_executor or result_summarizer updates it
+        if node_name in ("partial_executor", "result_summarizer"):
+            new_plan = node_output.get("plan")
+            if new_plan:
+                deps.db().update_project_plan(project_id, {**new_plan, "_quality": quality})
+
+    queue: asyncio.Queue = asyncio.Queue()
+    _run_queues[project_id] = queue
+    _run_events[project_id] = []
+
+    deps.db().update_project_status(project_id, "running")
+    background_tasks.add_task(
+        _run_agent_with_state,
+        project_id=project_id,
+        initial_state=initial_state,
+        queue=queue,
+        graph_fn=build_partial_rerender_graph,
+        replan=False,
+        on_node=_on_modify_node,
+    )
+    return {"status": "modify_started"}
+
+
 @app.post("/api/projects/{project_id}/feedback")
 async def submit_feedback(project_id: str, req: FeedbackRequest, background_tasks: BackgroundTasks):
     proj = deps.db().get_project(project_id)
@@ -226,8 +439,6 @@ async def submit_feedback(project_id: str, req: FeedbackRequest, background_task
 
     if not req.replan:
         return {"status": "saved"}
-
-    from agent.graph import build_replan_graph
 
     plan = proj.get("latest_plan_json") or {}
     answers = {
@@ -254,7 +465,8 @@ async def submit_feedback(project_id: str, req: FeedbackRequest, background_task
     deps.db().update_project_status(project_id, "running")
     background_tasks.add_task(
         _run_agent_with_state, project_id=project_id,
-        initial_state=replan_state, queue=queue, replan=True,
+        initial_state=replan_state, queue=queue,
+        graph_fn=build_replan_graph, replan=False,
     )
     return {"status": "replan_started"}
 
@@ -348,11 +560,17 @@ async def _run_agent(
             "assets_available": "none",
         }
 
-    await _run_agent_with_state(project_id, initial_state, queue, replan=False)
+    from agent.graph import build_graph
+    await _run_agent_with_state(project_id, initial_state, queue, graph_fn=build_graph)
 
 
 async def _run_agent_with_state(
-    project_id: str, initial_state: dict, queue: asyncio.Queue, replan: bool
+    project_id: str,
+    initial_state: dict,
+    queue: asyncio.Queue,
+    graph_fn: Any,
+    replan: bool = False,
+    on_node: Any = None,
 ):
     loop = asyncio.get_running_loop()
 
@@ -361,33 +579,46 @@ async def _run_agent_with_state(
         loop.call_soon_threadsafe(queue.put_nowait, event)
 
     def run_in_thread():
-        from agent.graph import build_graph, build_replan_graph
-
-        graph = build_replan_graph() if replan else build_graph()
+        graph = graph_fn()
         stdout_buf = io.StringIO()
 
         try:
-            node_start: dict[str, str] = {}
+            node_started_at: dict[str, str] = {}
 
             with contextlib.redirect_stdout(stdout_buf):
-                for chunk in graph.stream(initial_state, stream_mode="updates"):
+                for mode, chunk in graph.stream(
+                    initial_state, stream_mode=["updates", "tasks"]
+                ):
                     captured = _strip_ansi(stdout_buf.getvalue()).strip()
                     stdout_buf.truncate(0)
                     stdout_buf.seek(0)
 
-                    for node_name, node_output in chunk.items():
-                        ts = datetime.now().isoformat()
-                        started = node_start.get(node_name, ts)
-                        _emit({
-                            "type": "node_done",
-                            "node": node_name,
-                            "data": _serialize(node_output),
-                            "stdout": captured,
-                            "timestamp": ts,
-                            "started_at": started,
-                        })
-                        # Mark next nodes as started (heuristic)
-                        node_start[node_name] = ts
+                    if mode == "tasks":
+                        # chunk has 'triggers' when node is STARTING,
+                        # has 'result'/'error' when node is DONE (we use updates for done)
+                        if "triggers" in chunk:
+                            node_name = chunk.get("name", "")
+                            ts = datetime.now().isoformat()
+                            node_started_at[node_name] = ts
+                            _emit({
+                                "type": "node_start",
+                                "node": node_name,
+                                "timestamp": ts,
+                            })
+                    elif mode == "updates":
+                        for node_name, node_output in chunk.items():
+                            ts = datetime.now().isoformat()
+                            started = node_started_at.get(node_name, ts)
+                            _emit({
+                                "type": "node_done",
+                                "node": node_name,
+                                "data": _serialize(node_output),
+                                "stdout": captured,
+                                "timestamp": ts,
+                                "started_at": started,
+                            })
+                            if on_node:
+                                on_node(node_name, node_output)
 
             _emit({"type": "done", "timestamp": datetime.now().isoformat()})
             deps.db().update_project_status(project_id, "done")
@@ -431,6 +662,8 @@ _HTML = r"""<!DOCTYPE html>
   .btn-secondary:hover { background: #30363d; }
   .btn-danger { background: #da3633; color: #fff; border: 1px solid #f85149; }
   .btn-danger:hover { background: #f85149; }
+  .btn-approve { background: #1f6feb; color: #fff; border: 1px solid #388bfd; }
+  .btn-approve:hover { background: #388bfd; }
   .status-done { color: #3fb950; }
   .status-running { color: #d29922; }
   .status-failed { color: #f85149; }
@@ -449,6 +682,14 @@ _HTML = r"""<!DOCTYPE html>
   @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
   input, textarea, select { background: #0d1117; border: 1px solid #30363d; color: #c9d1d9; border-radius: 6px; }
   input:focus, textarea:focus, select:focus { outline: none; border-color: #58a6ff; }
+  .chip { display: inline-flex; align-items: center; padding: 3px 10px; border-radius: 9999px;
+    font-size: 12px; cursor: pointer; border: 1px solid #30363d; background: #21262d;
+    color: #8b949e; transition: all 0.15s; user-select: none; }
+  .chip:hover { border-color: #58a6ff; color: #c9d1d9; }
+  .chip.selected { background: #0d419d; border-color: #388bfd; color: #79c0ff; }
+  .chat-input { background: #161b22; border: 1px solid #30363d; border-radius: 12px; }
+  .chat-input:focus-within { border-color: #58a6ff; }
+  .approve-bar { background: #0d2136; border: 1px solid #1f6feb; border-radius: 10px; }
 </style>
 </head>
 <body class="h-screen flex flex-col overflow-hidden">
@@ -467,6 +708,9 @@ _HTML = r"""<!DOCTYPE html>
     <button onclick="initDb()" class="btn-secondary text-xs px-3 py-1.5 rounded-md">Init DB</button>
     <button onclick="openSettings()" class="btn-secondary text-xs px-3 py-1.5 rounded-md flex items-center gap-1">
       <span>⚙</span> API Key
+    </button>
+    <button onclick="newVideo()" class="btn-secondary text-xs px-3 py-1.5 rounded-md flex items-center gap-1">
+      <span>+</span> New
     </button>
   </div>
 </header>
@@ -512,147 +756,116 @@ _HTML = r"""<!DOCTYPE html>
 <div class="flex flex-1 overflow-hidden">
 
 <!-- Sidebar -->
-<aside class="sidebar w-64 flex-shrink-0 flex flex-col overflow-hidden">
-  <div class="p-3 border-b border-gray-800">
-    <button onclick="showNewForm()" class="btn-primary w-full text-sm py-2 rounded-md font-medium">
-      + New Project
-    </button>
-  </div>
-
-  <!-- New project form -->
-  <div id="new-form" class="hidden p-3 border-b border-gray-800">
-    <div class="mb-2">
-      <label class="text-xs text-gray-400 mb-1 block">Brief</label>
-      <textarea id="new-brief" rows="3" class="w-full text-sm p-2 resize-none"
-        placeholder="Describe the video you want to create..."></textarea>
-    </div>
-    <div class="grid grid-cols-2 gap-2 mb-2">
-      <div>
-        <label class="text-xs text-gray-400 mb-1 block">Brand</label>
-        <input id="new-brand" type="text" value="tong_sui" class="w-full text-xs p-1.5"/>
-      </div>
-      <div>
-        <label class="text-xs text-gray-400 mb-1 block">User</label>
-        <input id="new-user" type="text" value="ej" class="w-full text-xs p-1.5"/>
-      </div>
-    </div>
-    <div class="flex gap-2">
-      <button onclick="createProject()" class="btn-primary text-xs px-3 py-1.5 rounded-md flex-1">Create</button>
-      <button onclick="hideNewForm()" class="btn-secondary text-xs px-3 py-1.5 rounded-md">Cancel</button>
-    </div>
-  </div>
-
+<aside class="sidebar w-56 flex-shrink-0 flex flex-col overflow-hidden">
+  <div class="p-2 border-b border-gray-800 text-xs text-gray-500 px-3 py-2 font-medium">Projects</div>
   <!-- Project list -->
   <div id="project-list" class="flex-1 overflow-y-auto p-2 space-y-1">
-    <p class="text-xs text-gray-500 text-center pt-4">Loading projects...</p>
+    <p class="text-xs text-gray-500 text-center pt-4">Loading...</p>
   </div>
 </aside>
 
 <!-- Main content -->
 <main class="flex-1 overflow-hidden flex flex-col">
-  <!-- Empty state -->
-  <div id="empty-state" class="flex-1 flex items-center justify-center text-gray-600">
-    <div class="text-center">
-      <div class="text-5xl mb-4">🎬</div>
-      <p class="text-lg font-medium text-gray-500">Select or create a project</p>
-      <p class="text-sm mt-1">Run the AI agent to generate your video</p>
-    </div>
-  </div>
 
-  <!-- Project view -->
-  <div id="project-view" class="hidden flex-1 flex flex-col overflow-hidden">
-    <!-- Project header -->
-    <div class="p-4 border-b border-gray-800 flex-shrink-0" style="min-height:0">
-      <div class="flex items-start justify-between gap-4">
-        <div class="flex-1 min-w-0">
-          <div class="flex items-center gap-2 mb-1">
-            <span id="proj-status-dot" class="text-xs font-mono px-2 py-0.5 rounded-full bg-gray-800"></span>
-            <span id="proj-id" class="text-xs text-gray-500 font-mono"></span>
-          </div>
-          <p id="proj-brief" class="text-sm text-gray-300 leading-relaxed"></p>
-          <div class="flex gap-3 mt-2 text-xs text-gray-500">
-            <span>Brand: <span id="proj-brand" class="text-gray-400"></span></span>
-            <span>User: <span id="proj-user" class="text-gray-400"></span></span>
-            <span>Created: <span id="proj-created" class="text-gray-400"></span></span>
-          </div>
+  <!-- Body: log/plan pane + video panel -->
+  <div class="flex flex-1 overflow-hidden">
+
+    <!-- Left pane: tabs + chat bar -->
+    <div class="flex-1 flex flex-col overflow-hidden border-r border-gray-800">
+
+      <!-- Project info strip (shown when project selected) -->
+      <div id="proj-info-strip" class="hidden px-4 py-2 border-b border-gray-800 flex items-center gap-3 flex-shrink-0">
+        <span id="proj-status-dot" class="text-xs font-mono px-2 py-0.5 rounded-full bg-gray-800"></span>
+        <span id="proj-id" class="text-xs text-gray-500 font-mono"></span>
+        <p id="proj-brief" class="text-xs text-gray-400 truncate flex-1"></p>
+      </div>
+
+      <!-- Tab bar -->
+      <div class="flex border-b border-gray-800 px-4 flex-shrink-0">
+        <button onclick="switchTab('log')" id="tab-log"
+          class="tab-btn text-xs py-2.5 px-3 border-b-2 border-blue-500 text-blue-400 font-medium">
+          Agent Steps
+        </button>
+        <button onclick="switchTab('plan')" id="tab-plan"
+          class="tab-btn text-xs py-2.5 px-3 border-b-2 border-transparent text-gray-500 hover:text-gray-400">
+          Storyboard &amp; Plan
+        </button>
+      </div>
+
+      <!-- Log pane -->
+      <div id="pane-log" class="flex-1 overflow-y-auto p-4">
+        <div id="agent-log-empty" class="text-center text-gray-600 py-12">
+          <div class="text-4xl mb-3">🎬</div>
+          <p class="text-sm text-gray-500">Describe your video below to get started</p>
         </div>
-        <div class="flex gap-2 flex-shrink-0">
-          <button onclick="runProject()" id="run-btn"
-            class="btn-primary text-sm px-4 py-2 rounded-md font-medium flex items-center gap-2">
-            <span>▶</span> Run Pipeline
-          </button>
-          <button onclick="showFeedbackForm()" id="feedback-btn"
-            class="btn-secondary text-sm px-3 py-2 rounded-md hidden">
-            ✎ Feedback
+        <div id="agent-log" class="space-y-3 hidden"></div>
+      </div>
+
+      <!-- Plan pane -->
+      <div id="pane-plan" class="hidden flex-1 overflow-y-auto p-4">
+        <div id="plan-empty" class="text-center text-gray-600 py-12">
+          <p class="text-sm">No plan yet — send a brief to start</p>
+        </div>
+        <div id="plan-content" class="hidden space-y-5"></div>
+      </div>
+
+      <!-- Approve bar (visible in plan_ready state) -->
+      <div id="approve-bar" class="hidden px-4 py-3 border-t border-gray-800 flex-shrink-0">
+        <div class="approve-bar p-3 flex items-center gap-3">
+          <div class="flex-1">
+            <p class="text-sm font-medium text-blue-300">Plan ready — review the storyboard</p>
+            <p class="text-xs text-gray-500 mt-0.5">Edit scenes above, then approve to generate</p>
+          </div>
+          <button onclick="approveAndGenerate()"
+            class="btn-approve text-sm px-5 py-2 rounded-md font-medium flex items-center gap-2 flex-shrink-0">
+            <span>▶</span> Approve &amp; Generate
           </button>
         </div>
       </div>
 
-      <!-- Feedback form -->
-      <div id="feedback-form" class="hidden mt-3 pt-3 border-t border-gray-800">
-        <div class="flex gap-2">
-          <input id="feedback-text" type="text" class="flex-1 text-sm p-2"
-            placeholder="e.g. Make it more energetic, change the color to blue..."/>
-          <select id="feedback-rating" class="text-sm p-2">
-            <option value="">Rating</option>
-            <option value="5">⭐⭐⭐⭐⭐ 5</option>
-            <option value="4">⭐⭐⭐⭐ 4</option>
-            <option value="3">⭐⭐⭐ 3</option>
-            <option value="2">⭐⭐ 2</option>
-            <option value="1">⭐ 1</option>
-          </select>
-          <button onclick="submitFeedback()"
-            class="btn-primary text-sm px-3 py-2 rounded-md">Replan</button>
-          <button onclick="hideFeedbackForm()"
-            class="btn-secondary text-sm px-3 py-2 rounded-md">Cancel</button>
+      <!-- Chat bar -->
+      <div id="chat-bar" class="px-4 py-3 border-t border-gray-800 flex-shrink-0">
+        <!-- Chips row -->
+        <div id="chips-row" class="flex items-center gap-1.5 mb-2 flex-wrap">
+          <span class="text-xs text-gray-600 mr-1">Aspect:</span>
+          <span class="chip selected" data-aspect="9:16" onclick="selectAspect(this)">9:16 ↕</span>
+          <span class="chip" data-aspect="16:9" onclick="selectAspect(this)">16:9 ↔</span>
+          <span class="chip" data-aspect="1:1" onclick="selectAspect(this)">1:1 ▣</span>
+          <span class="text-gray-700 mx-1">|</span>
+          <span class="text-xs text-gray-600 mr-1">Duration:</span>
+          <span class="chip selected" data-dur="5" onclick="selectDuration(this)">5s</span>
+          <span class="chip" data-dur="10" onclick="selectDuration(this)">10s</span>
+          <span class="text-gray-700 mx-1">|</span>
+          <span class="text-xs text-gray-600 mr-1">Style:</span>
+          <span class="chip selected" data-style="fresh" onclick="toggleStyle(this)">fresh</span>
+          <span class="chip" data-style="playful" onclick="toggleStyle(this)">playful</span>
+          <span class="chip" data-style="premium" onclick="toggleStyle(this)">premium</span>
+          <span class="chip" data-style="promo" onclick="toggleStyle(this)">promo</span>
         </div>
-      </div>
-    </div>
-
-    <!-- Body: agent log + video player -->
-    <div class="flex flex-1 overflow-hidden">
-
-      <!-- Agent log + Plan tabs -->
-      <div class="flex-1 flex flex-col overflow-hidden border-r border-gray-800">
-        <!-- Tab bar -->
-        <div class="flex border-b border-gray-800 px-4 flex-shrink-0">
-          <button onclick="switchTab('log')" id="tab-log"
-            class="tab-btn text-xs py-2.5 px-3 border-b-2 border-blue-500 text-blue-400 font-medium">
-            Agent Log
-          </button>
-          <button onclick="switchTab('plan')" id="tab-plan"
-            class="tab-btn text-xs py-2.5 px-3 border-b-2 border-transparent text-gray-500 hover:text-gray-400">
-            Storyboard &amp; Plan
+        <!-- Input row -->
+        <div class="chat-input flex items-end gap-2 px-3 py-2">
+          <textarea id="chat-input" rows="2"
+            class="flex-1 text-sm bg-transparent border-none outline-none resize-none text-gray-200"
+            placeholder="Describe your video..."
+            oninput="this.style.height='auto';this.style.height=Math.min(this.scrollHeight,120)+'px'"></textarea>
+          <button id="chat-send-btn" onclick="handleChatSend()"
+            class="btn-primary text-sm px-4 py-1.5 rounded-lg font-medium flex-shrink-0 self-end">
+            Send
           </button>
         </div>
-
-        <!-- Log pane -->
-        <div id="pane-log" class="flex-1 overflow-y-auto p-4">
-          <div id="agent-log-empty" class="text-center text-gray-600 py-12">
-            <p class="text-sm">Click <strong class="text-gray-500">▶ Run Pipeline</strong> to start the agent</p>
-          </div>
-          <div id="agent-log" class="space-y-3 hidden"></div>
-        </div>
-
-        <!-- Plan pane -->
-        <div id="pane-plan" class="hidden flex-1 overflow-y-auto p-4">
-          <div id="plan-empty" class="text-center text-gray-600 py-12">
-            <p class="text-sm">No plan yet — run the pipeline first</p>
-          </div>
-          <div id="plan-content" class="hidden space-y-5"></div>
-        </div>
-      </div>
-
-      <!-- Video panel -->
-      <div id="video-panel" class="w-64 flex-shrink-0 flex flex-col p-4 gap-3 overflow-y-auto">
-        <div id="video-empty" class="flex-1 flex flex-col items-center justify-center text-gray-700 gap-2">
-          <span class="text-4xl">🎞</span>
-          <p class="text-xs text-center">Output video will appear here after the pipeline completes</p>
-        </div>
-        <div id="video-outputs" class="hidden space-y-3"></div>
       </div>
 
     </div>
+
+    <!-- Video panel -->
+    <div id="video-panel" class="w-56 flex-shrink-0 flex flex-col p-4 gap-3 overflow-y-auto">
+      <div id="video-empty" class="flex-1 flex flex-col items-center justify-center text-gray-700 gap-2">
+        <span class="text-4xl">🎞</span>
+        <p class="text-xs text-center">Output video will appear here after generation</p>
+      </div>
+      <div id="video-outputs" class="hidden space-y-3"></div>
+    </div>
+
   </div>
 </main>
 
@@ -664,10 +877,14 @@ _HTML = r"""<!DOCTYPE html>
 </div>
 
 <script>
-// ── State ──────────────────────────────────────────────────────────────────
+// ── App state ──────────────────────────────────────────────────────────────
 let currentProjectId = null;
 let eventSource = null;
-let nodeStartTimes = {};
+let appState = 'idle'; // idle | planning | plan_ready | executing | done | error
+let currentPlan = null;
+let selectedDuration = 5;
+let selectedStyles = ['fresh'];
+let selectedAspect = '9:16';
 
 // ── Node metadata ──────────────────────────────────────────────────────────
 const NODE_META = {
@@ -677,6 +894,8 @@ const NODE_META = {
   ask_user:             { icon: '💬', label: 'Ask User',            desc: 'Collecting clarification answers' },
   planner_llm:          { icon: '✨', label: 'LLM Planner',         desc: 'Generating video plan with AI' },
   plan_checker:         { icon: '✅', label: 'Plan Checker',        desc: 'Validating & fixing plan' },
+  change_classifier:    { icon: '🔀', label: 'Change Classifier',   desc: 'Analyzing modification scope' },
+  partial_executor:     { icon: '🎯', label: 'Partial Re-render',   desc: 'Regenerating affected shots only' },
   executor_pipeline:    { icon: '🎬', label: 'Video Renderer',      desc: 'Rendering video clips' },
   caption_agent:        { icon: '📝', label: 'Caption Agent',       desc: 'Generating caption segments' },
   layout_branding:      { icon: '🎨', label: 'Layout & Branding',   desc: 'Applying subtitles & watermark' },
@@ -750,6 +969,17 @@ function getNodeSummary(node, data) {
         const s = data.summary || '';
         return s ? s.slice(0, 100) + (s.length > 100 ? '…' : '') : 'Summary generated';
       }
+      case 'change_classifier': {
+        const ct = data.change_type;
+        const shots = (data.affected_shot_indices || []);
+        if (ct === 'local') return `Local change — re-rendering shot${shots.length !== 1 ? 's' : ''} [${shots.join(', ')}]`;
+        return 'Global change — replanning entire video';
+      }
+      case 'partial_executor': {
+        const clips = (data.scene_clips || []).length;
+        const affected = (data.messages || []).find(m => m.content?.includes('partial_executor'));
+        return clips ? `${clips} clips ready (partial re-render)` : 'Partial re-render complete';
+      }
       case 'memory_writer':
         return 'Saved to SQLite & ChromaDB vector store';
       default:
@@ -783,7 +1013,60 @@ function toast(msg, type = 'info') {
   setTimeout(() => el.classList.add('hidden'), 3000);
 }
 
+// ── Chip selection ─────────────────────────────────────────────────────────
+function selectAspect(el) {
+  document.querySelectorAll('[data-aspect]').forEach(c => c.classList.remove('selected'));
+  el.classList.add('selected');
+  selectedAspect = el.dataset.aspect;
+}
+
+function selectDuration(el) {
+  document.querySelectorAll('[data-dur]').forEach(c => c.classList.remove('selected'));
+  el.classList.add('selected');
+  selectedDuration = parseInt(el.dataset.dur);
+}
+
+function toggleStyle(el) {
+  const s = el.dataset.style;
+  if (el.classList.contains('selected')) {
+    if (selectedStyles.length > 1) {
+      el.classList.remove('selected');
+      selectedStyles = selectedStyles.filter(x => x !== s);
+    }
+  } else {
+    el.classList.add('selected');
+    selectedStyles.push(s);
+  }
+}
+
+// ── App state machine ──────────────────────────────────────────────────────
+function setAppState(state) {
+  appState = state;
+  const input = document.getElementById('chat-input');
+  const sendBtn = document.getElementById('chat-send-btn');
+  const chipsRow = document.getElementById('chips-row');
+  const approveBar = document.getElementById('approve-bar');
+
+  const cfg = {
+    idle:       { placeholder: 'Describe your video...', sendLabel: 'Send',   chips: true,  approve: false, inputDisabled: false },
+    planning:   { placeholder: 'Planning…',              sendLabel: '…',      chips: false, approve: false, inputDisabled: true  },
+    plan_ready: { placeholder: 'Ask to change the plan...', sendLabel: 'Replan', chips: true, approve: true, inputDisabled: false },
+    executing:  { placeholder: 'Generating…',            sendLabel: '…',      chips: false, approve: false, inputDisabled: true  },
+    done:       { placeholder: 'Modify this video...',   sendLabel: 'Modify', chips: false, approve: false, inputDisabled: false },
+    error:      { placeholder: 'Describe your video...', sendLabel: 'Send',   chips: true,  approve: false, inputDisabled: false },
+  }[state] || { placeholder: '', sendLabel: 'Send', chips: true, approve: false, inputDisabled: false };
+
+  input.placeholder = cfg.placeholder;
+  input.disabled = cfg.inputDisabled;
+  sendBtn.textContent = cfg.sendLabel;
+  sendBtn.disabled = cfg.inputDisabled;
+  chipsRow.classList.toggle('hidden', !cfg.chips);
+  approveBar.classList.toggle('hidden', !cfg.approve);
+}
+
 // ── Project list ───────────────────────────────────────────────────────────
+const _run_events_cache = {};
+
 async function loadProjects() {
   try {
     const projects = await api('GET', '/api/projects');
@@ -802,22 +1085,20 @@ function renderProjectList(projects) {
   }
   el.innerHTML = projects.map(p => {
     const statusClass = {
-      done: 'status-done', running: 'status-running',
-      failed: 'status-failed'
+      done: 'status-done', running: 'status-running', failed: 'status-failed', planned: 'text-blue-400'
     }[p.status] || 'status-pending';
-    const dot = { done: '●', running: '◉', failed: '✕', pending: '○' }[p.status] || '○';
-    const brief = p.brief.length > 55 ? p.brief.slice(0, 55) + '…' : p.brief;
+    const dot = { done: '●', running: '◉', failed: '✕', pending: '○', planned: '◑' }[p.status] || '○';
+    const brief = p.brief.length > 45 ? p.brief.slice(0, 45) + '…' : p.brief;
     const active = p.project_id === currentProjectId ? 'border-blue-500 bg-blue-950/20' : '';
     return `
       <div onclick="selectProject('${p.project_id}')"
-        class="card card-hover p-2.5 ${active} transition-colors">
-        <div class="flex items-center gap-2 mb-1">
+        class="card card-hover p-2 ${active} transition-colors">
+        <div class="flex items-center gap-1.5 mb-1">
           <span class="${statusClass} text-xs">${dot}</span>
-          <span class="text-xs text-gray-500 font-mono truncate">${p.project_id.slice(0, 8)}</span>
+          <span class="text-xs text-gray-500 font-mono">${p.project_id.slice(0, 8)}</span>
           <span class="text-xs text-gray-600 ml-auto">${p.status}</span>
         </div>
         <p class="text-xs text-gray-400 leading-relaxed">${brief}</p>
-        <p class="text-xs text-gray-600 mt-1">${p.brand_id} · ${p.created_at?.slice(0, 10) || ''}</p>
       </div>`;
   }).join('');
 }
@@ -826,109 +1107,248 @@ async function selectProject(id) {
   currentProjectId = id;
   try {
     const proj = await api('GET', `/api/projects/${id}`);
-    showProjectView(proj);
-    // Re-render list to highlight selected
+    updateProjStrip(proj);
     loadProjects();
+
     // Reset video panel
     document.getElementById('video-empty').classList.remove('hidden');
     document.getElementById('video-outputs').classList.add('hidden');
     document.getElementById('video-outputs').innerHTML = '';
 
-    // Check if there are stored events to replay
-    if (_run_events_cache[id]) {
-      clearAgentLog();
-      replayEvents(_run_events_cache[id]);
-    } else {
-      clearAgentLog();
-      // Show feedback button if done
-      const fbBtn = document.getElementById('feedback-btn');
-      if (proj.status === 'done') fbBtn.classList.remove('hidden');
-      else fbBtn.classList.add('hidden');
-    }
+    clearAgentLog();
 
-    // Load video if project is already done
-    if (proj.status === 'done' && (proj.output_paths || []).length) {
-      loadProjectVideo(id);
+    if (proj.status === 'done') {
+      setAppState('done');
+      if (_run_events_cache[id]) replayEvents(_run_events_cache[id]);
+      if ((proj.output_paths || []).length) loadProjectVideo(id);
+      if (proj.latest_plan_json) {
+        currentPlan = proj.latest_plan_json;
+        renderPlan(currentPlan, false);
+      }
+    } else if (proj.status === 'planned') {
+      setAppState('plan_ready');
+      if (proj.latest_plan_json) {
+        currentPlan = proj.latest_plan_json;
+        renderPlan(currentPlan, true);
+        switchTab('plan');
+      }
+    } else if (proj.status === 'running') {
+      setAppState('executing');
+      if (_run_events_cache[id]) replayEvents(_run_events_cache[id]);
+      else connectEventStream(id);
+    } else {
+      setAppState('idle');
+      if (_run_events_cache[id]) replayEvents(_run_events_cache[id]);
     }
   } catch (e) {
     toast(e.message, 'error');
   }
 }
 
-const _run_events_cache = {}; // project_id -> events[]
-
-function showProjectView(proj) {
-  document.getElementById('empty-state').classList.add('hidden');
-  document.getElementById('project-view').classList.remove('hidden');
-
-  const statusLabels = { done: '✓ done', running: '⟳ running', failed: '✕ failed', pending: '● pending' };
-  const statusColors = { done: 'text-green-400', running: 'text-yellow-400', failed: 'text-red-400', pending: 'text-gray-400' };
+function updateProjStrip(proj) {
+  const strip = document.getElementById('proj-info-strip');
+  strip.classList.remove('hidden');
+  const statusLabels = { done: '✓ done', running: '⟳ running', failed: '✕ failed', pending: '● pending', planned: '◑ planned' };
+  const statusColors = { done: 'text-green-400', running: 'text-yellow-400', failed: 'text-red-400', pending: 'text-gray-400', planned: 'text-blue-400' };
   const dot = document.getElementById('proj-status-dot');
   dot.textContent = statusLabels[proj.status] || proj.status;
   dot.className = `text-xs font-mono px-2 py-0.5 rounded-full bg-gray-800 ${statusColors[proj.status] || ''}`;
-
-  document.getElementById('proj-id').textContent = proj.project_id;
+  document.getElementById('proj-id').textContent = proj.project_id.slice(0, 8);
   document.getElementById('proj-brief').textContent = proj.brief;
-  document.getElementById('proj-brand').textContent = proj.brand_id;
-  document.getElementById('proj-user').textContent = proj.user_id;
-  document.getElementById('proj-created').textContent = proj.created_at?.slice(0, 19).replace('T', ' ') || '—';
-
-  const fbBtn = document.getElementById('feedback-btn');
-  if (proj.status === 'done') fbBtn.classList.remove('hidden');
-  else fbBtn.classList.add('hidden');
 }
 
-// ── New project form ───────────────────────────────────────────────────────
-function showNewForm() {
-  document.getElementById('new-form').classList.remove('hidden');
-  document.getElementById('new-brief').focus();
-}
-function hideNewForm() {
-  document.getElementById('new-form').classList.add('hidden');
+// ── Chat send handler ──────────────────────────────────────────────────────
+async function handleChatSend() {
+  const input = document.getElementById('chat-input');
+  const text = input.value.trim();
+  if (!text) return;
+
+  if (appState === 'idle' || appState === 'error') {
+    input.value = '';
+    input.style.height = 'auto';
+    await createAndPlan(text);
+  } else if (appState === 'plan_ready') {
+    input.value = '';
+    input.style.height = 'auto';
+    await replanWithText(text);
+  } else if (appState === 'done') {
+    input.value = '';
+    input.style.height = 'auto';
+    await submitFeedback(text);
+  }
 }
 
-async function createProject() {
-  const brief = document.getElementById('new-brief').value.trim();
-  if (!brief) { toast('Please enter a brief', 'error'); return; }
-  const brand_id = document.getElementById('new-brand').value.trim() || 'tong_sui';
-  const user_id = document.getElementById('new-user').value.trim() || 'ej';
+async function createAndPlan(brief) {
   try {
-    const res = await api('POST', '/api/projects', { brief, brand_id, user_id });
-    hideNewForm();
-    document.getElementById('new-brief').value = '';
-    toast('Project created!', 'success');
+    setAppState('planning');
+    clearAgentLog();
+    showAgentLog();
+
+    const answers = {
+      duration_sec: selectedDuration,
+      style_tone: [...selectedStyles],
+      platform: 'tiktok',
+      language: 'en',
+      assets_available: 'none',
+    };
+
+    const res = await api('POST', '/api/projects', { brief, brand_id: 'tong_sui', user_id: 'ej' });
+    currentProjectId = res.project_id;
+    _run_events_cache[currentProjectId] = [];
     await loadProjects();
-    await selectProject(res.project_id);
+
+    await api('POST', `/api/projects/${currentProjectId}/plan`, { clarification_answers: answers });
+    connectEventStream(currentProjectId, 'plan');
   } catch (e) {
     toast(e.message, 'error');
+    setAppState('error');
   }
 }
 
-// ── Run pipeline ───────────────────────────────────────────────────────────
-async function runProject() {
+async function replanWithText(text) {
   if (!currentProjectId) return;
-
-  const btn = document.getElementById('run-btn');
-  btn.disabled = true;
-  btn.innerHTML = '<span class="spinner">↻</span> Running...';
-
-  clearAgentLog();
-  document.getElementById('agent-log-empty').classList.add('hidden');
-  document.getElementById('agent-log').classList.remove('hidden');
-  _run_events_cache[currentProjectId] = [];
-  nodeStartTimes = {};
-
   try {
-    await api('POST', `/api/projects/${currentProjectId}/run`, { skip_clarification: true });
-    connectEventStream(currentProjectId);
+    setAppState('planning');
+    clearAgentLog();
+    showAgentLog();
+    switchTab('log');
+    _run_events_cache[currentProjectId] = [];
+
+    const answers = {
+      duration_sec: selectedDuration,
+      style_tone: [...selectedStyles],
+      platform: 'tiktok',
+      language: 'en',
+      assets_available: 'none',
+    };
+    await api('POST', `/api/projects/${currentProjectId}/plan`, {
+      clarification_answers: answers,
+      plan_feedback: text,
+    });
+    connectEventStream(currentProjectId, 'plan');
   } catch (e) {
     toast(e.message, 'error');
-    btn.disabled = false;
-    btn.innerHTML = '<span>▶</span> Run Pipeline';
+    setAppState('error');
   }
 }
 
-function connectEventStream(projectId) {
+async function approveAndGenerate(quality = 'turbo') {
+  if (!currentProjectId) return;
+  try {
+    const plan = collectModifiedPlan();
+    setAppState('executing');
+    clearAgentLog();
+    showAgentLog();
+    switchTab('log');
+    _run_events_cache[currentProjectId] = [];
+
+    await api('POST', `/api/projects/${currentProjectId}/execute`, {
+      plan: plan,
+      quality: quality,
+      clarification_answers: {
+        platform: plan.platform || 'tiktok',
+        duration_sec: plan.duration_sec || selectedDuration,
+        style_tone: plan.style_tone || selectedStyles,
+        language: plan.language || 'en',
+        assets_available: 'none',
+      },
+    });
+    connectEventStream(currentProjectId, 'execute');
+  } catch (e) {
+    toast(e.message, 'error');
+    setAppState('error');
+  }
+}
+
+async function upgradeToHD() {
+  if (!currentProjectId || !currentPlan) return;
+  try {
+    setAppState('executing');
+    clearAgentLog();
+    showAgentLog();
+    switchTab('log');
+    _run_events_cache[currentProjectId] = [];
+
+    await api('POST', `/api/projects/${currentProjectId}/execute`, {
+      plan: currentPlan,
+      quality: 'hd',
+      clarification_answers: {
+        platform: currentPlan.platform || 'tiktok',
+        duration_sec: currentPlan.duration_sec || selectedDuration,
+        style_tone: currentPlan.style_tone || selectedStyles,
+        language: currentPlan.language || 'en',
+        assets_available: 'none',
+      },
+    });
+    connectEventStream(currentProjectId, 'execute');
+  } catch (e) {
+    toast(e.message, 'error');
+    setAppState('error');
+  }
+}
+
+async function submitFeedback(text) {
+  if (!currentProjectId) return;
+  try {
+    setAppState('executing');
+    clearAgentLog();
+    showAgentLog();
+    switchTab('log');
+    _run_events_cache[currentProjectId] = [];
+    const quality = currentPlan?._quality || 'turbo';
+    const res = await api('POST', `/api/projects/${currentProjectId}/modify`, { text, quality });
+    if (res.status === 'modify_started') {
+      connectEventStream(currentProjectId, 'execute');
+    }
+    loadProjects();
+  } catch (e) {
+    toast(e.message, 'error');
+    setAppState('error');
+  }
+}
+
+function collectModifiedPlan() {
+  if (!currentPlan) return {};
+  const plan = JSON.parse(JSON.stringify(currentPlan));
+  document.querySelectorAll('[data-scene-idx]').forEach(card => {
+    const i = parseInt(card.dataset.sceneIdx);
+    const descEl = card.querySelector('[data-field="desc"]');
+    const durEl = card.querySelector('[data-field="duration"]');
+    const overlayEl = card.querySelector('[data-field="overlay"]');
+    if (descEl && plan.storyboard && plan.storyboard[i]) {
+      plan.storyboard[i].desc = descEl.value;
+    }
+    if (durEl) {
+      const dur = parseFloat(durEl.value);
+      if (!isNaN(dur)) {
+        if (plan.storyboard && plan.storyboard[i]) plan.storyboard[i].duration = dur;
+        if (plan.shot_list && plan.shot_list[i]) plan.shot_list[i].duration = dur;
+      }
+    }
+    if (overlayEl && plan.shot_list && plan.shot_list[i]) {
+      plan.shot_list[i].text_overlay = overlayEl.value;
+    }
+  });
+  return plan;
+}
+
+function newVideo() {
+  currentProjectId = null;
+  currentPlan = null;
+  clearAgentLog();
+  setAppState('idle');
+  document.getElementById('proj-info-strip').classList.add('hidden');
+  document.getElementById('video-empty').classList.remove('hidden');
+  document.getElementById('video-outputs').classList.add('hidden');
+  document.getElementById('video-outputs').innerHTML = '';
+  document.getElementById('plan-content').classList.add('hidden');
+  document.getElementById('plan-empty').classList.remove('hidden');
+  switchTab('log');
+  document.getElementById('chat-input').focus();
+  loadProjects();
+}
+
+function connectEventStream(projectId, phase) {
   if (eventSource) { eventSource.close(); }
 
   eventSource = new EventSource(`/api/projects/${projectId}/events`);
@@ -937,56 +1357,77 @@ function connectEventStream(projectId) {
     const event = JSON.parse(e.data);
     _run_events_cache[projectId] = _run_events_cache[projectId] || [];
     _run_events_cache[projectId].push(event);
-    handleEvent(event, projectId);
+    handleEvent(event, projectId, phase);
   };
 
   eventSource.onerror = () => {
     eventSource.close();
     eventSource = null;
-    resetRunBtn();
   };
 }
 
-function handleEvent(event, projectId) {
-  if (event.type === 'node_done') {
+function handleEvent(event, projectId, phase) {
+  if (event.type === 'node_start') {
+    addNodeSpinner(event.node, event.timestamp);
+  } else if (event.type === 'node_done') {
     addNodeCard(event.node, event.data, event.stdout, event.timestamp);
-    if (event.node === 'planner_llm') {
-      if (!document.getElementById('pane-plan').classList.contains('hidden')) {
-        loadPlanView();
-      }
+    if (event.node === 'plan_checker' && event.data && event.data.plan) {
+      currentPlan = event.data.plan;
     }
-    if (event.node === 'qc_diagnose' && event.data.needs_user_action) {
+    if (event.node === 'planner_llm' && event.data && event.data.plan) {
+      currentPlan = event.data.plan;
+    }
+    if (event.node === 'qc_diagnose' && event.data && event.data.needs_user_action) {
       addQcDiagnoseAlert(event.data.qc_user_message, event.data.qc_diagnosis);
-      resetRunBtn();
+      setAppState('error');
       if (eventSource) { eventSource.close(); eventSource = null; }
       return;
     }
   } else if (event.type === 'done') {
-    addDoneCard(projectId);
-    resetRunBtn();
-    loadProjects();
-    // Show feedback button
-    document.getElementById('feedback-btn').classList.remove('hidden');
     if (eventSource) { eventSource.close(); eventSource = null; }
+    loadProjects();
+    if (phase === 'plan') {
+      // Planning done → load plan, switch to plan tab, show approve bar
+      api('GET', `/api/projects/${projectId}`).then(proj => {
+        if (proj.latest_plan_json) {
+          currentPlan = proj.latest_plan_json;
+          renderPlan(currentPlan, true);
+          switchTab('plan');
+        }
+        updateProjStrip(proj);
+      }).catch(() => {});
+      setAppState('plan_ready');
+      addPlanDoneCard();
+    } else {
+      // Execute done → load video
+      addDoneCard(projectId);
+      setAppState('done');
+      api('GET', `/api/projects/${projectId}`).then(proj => {
+        updateProjStrip(proj);
+        if (proj.latest_plan_json) {
+          currentPlan = proj.latest_plan_json;
+          renderPlan(currentPlan, false);
+        }
+      }).catch(() => {});
+    }
   } else if (event.type === 'error') {
     addErrorCard(event.message, event.traceback);
-    resetRunBtn();
+    setAppState('error');
     if (eventSource) { eventSource.close(); eventSource = null; }
+    loadProjects();
   }
 }
 
 function replayEvents(events) {
-  document.getElementById('agent-log-empty').classList.add('hidden');
-  document.getElementById('agent-log').classList.remove('hidden');
+  showAgentLog();
   for (const event of events) {
-    handleEvent(event, currentProjectId);
+    handleEvent(event, currentProjectId, null);
   }
 }
 
-function resetRunBtn() {
-  const btn = document.getElementById('run-btn');
-  btn.disabled = false;
-  btn.innerHTML = '<span>▶</span> Run Pipeline';
+function showAgentLog() {
+  document.getElementById('agent-log-empty').classList.add('hidden');
+  document.getElementById('agent-log').classList.remove('hidden');
 }
 
 // ── Agent log rendering ────────────────────────────────────────────────────
@@ -997,11 +1438,75 @@ function clearAgentLog() {
   document.getElementById('agent-log-empty').classList.remove('hidden');
 }
 
+// Spinner timers: node_name -> intervalId
+const _spinnerTimers = {};
+
+function addNodeSpinner(node, timestamp) {
+  const log = document.getElementById('agent-log');
+  showAgentLog();
+  // Remove any existing spinner for this node
+  const existing = document.getElementById(`spinner-${node}`);
+  if (existing) existing.remove();
+
+  const meta = NODE_META[node] || { icon: '⚙', label: node, desc: '' };
+  const startTime = timestamp ? new Date(timestamp) : new Date();
+
+  const card = document.createElement('div');
+  card.className = 'node-card running card p-3 pl-4 fade-in';
+  card.id = `spinner-${node}`;
+  card.innerHTML = `
+    <div class="flex items-center justify-between gap-2">
+      <div class="flex items-center gap-2">
+        <span class="text-base">${meta.icon}</span>
+        <div>
+          <span class="text-sm font-medium text-white">${meta.label}</span>
+          <span class="text-xs text-gray-500 ml-2">${meta.desc}</span>
+        </div>
+      </div>
+      <div class="flex items-center gap-2 flex-shrink-0">
+        <span id="elapsed-${node}" class="text-xs text-gray-600">0s</span>
+        <span class="spinner text-yellow-400">↻</span>
+      </div>
+    </div>`;
+  log.appendChild(card);
+  card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+
+  // Start elapsed timer
+  if (_spinnerTimers[node]) clearInterval(_spinnerTimers[node]);
+  _spinnerTimers[node] = setInterval(() => {
+    const el = document.getElementById(`elapsed-${node}`);
+    if (!el) { clearInterval(_spinnerTimers[node]); return; }
+    const secs = Math.round((Date.now() - startTime) / 1000);
+    el.textContent = secs >= 60 ? `${Math.floor(secs/60)}m${secs%60}s` : `${secs}s`;
+  }, 1000);
+}
+
+function addPlanDoneCard() {
+  const log = document.getElementById('agent-log');
+  const card = document.createElement('div');
+  card.className = 'card p-3 fade-in border-blue-800 bg-blue-950/20';
+  card.innerHTML = `
+    <div class="flex items-center gap-2">
+      <span class="text-blue-400 text-lg">📋</span>
+      <div>
+        <p class="text-sm font-medium text-blue-400">Plan ready!</p>
+        <p class="text-xs text-gray-500">Review and edit the storyboard, then click Approve &amp; Generate →</p>
+      </div>
+    </div>`;
+  log.appendChild(card);
+  card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
 function addNodeCard(node, data, stdout, timestamp) {
   const log = document.getElementById('agent-log');
   const meta = NODE_META[node] || { icon: '⚙', label: node, desc: '' };
   const summary = getNodeSummary(node, data || {});
   const ts = timestamp ? new Date(timestamp).toLocaleTimeString() : '';
+
+  // Remove spinner for this node and stop its timer
+  const spinner = document.getElementById(`spinner-${node}`);
+  if (spinner) spinner.remove();
+  if (_spinnerTimers[node]) { clearInterval(_spinnerTimers[node]); delete _spinnerTimers[node]; }
 
   // Remove any existing "running" card for this node
   const existing = document.getElementById(`node-${node}`);
@@ -1098,8 +1603,8 @@ function addQcDiagnoseAlert(message, diagnosis) {
     ? `<button onclick="openSettings()" class="mt-3 btn-primary text-sm px-4 py-2 rounded-md">
         ⚙️ 打开 API Settings
        </button>`
-    : `<button onclick="document.getElementById('run-btn').click()" class="mt-3 btn-secondary text-sm px-4 py-2 rounded-md">
-        ↻ 重新跑 Pipeline
+    : `<button onclick="setAppState('idle')" class="mt-3 btn-secondary text-sm px-4 py-2 rounded-md">
+        ↻ 重新描述
        </button>`;
   // Convert markdown **bold** to <strong>
   const html = escHtml(message).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>').replace(/\n/g, '<br>');
@@ -1145,23 +1650,30 @@ async function loadProjectVideo(projectId) {
     container.classList.remove('hidden');
     container.innerHTML = '';
 
-    for (const p of paths) {
-      const filename = p.split('/').pop();
-      const videoUrl = `/video/${filename}`;
-      const div = document.createElement('div');
-      div.className = 'fade-in';
-      div.innerHTML = `
-        <p class="text-xs text-gray-500 mb-1.5 truncate" title="${escHtml(filename)}">${escHtml(filename)}</p>
-        <video controls playsinline class="w-full rounded-lg border border-gray-700 bg-black"
-          style="max-height: 480px; aspect-ratio: 9/16; object-fit: contain;">
-          <source src="${videoUrl}" type="video/mp4"/>
-        </video>
-        <a href="${videoUrl}" download="${filename}"
-          class="mt-2 flex items-center justify-center gap-1.5 btn-secondary text-xs py-1.5 rounded-md w-full">
-          ⬇ Download
-        </a>`;
-      container.appendChild(div);
-    }
+    // Show most recent video only (last path)
+    const p = paths[paths.length - 1];
+    const filename = p.split('/').pop();
+    const videoUrl = `/video/${filename}`;
+    const isTurbo = proj.latest_plan_json?._quality === 'turbo';
+
+    const div = document.createElement('div');
+    div.className = 'fade-in space-y-2';
+    div.innerHTML = `
+      ${isTurbo ? `<div class="text-xs text-yellow-500 text-center px-1">⚡ Turbo preview (480p · ~2s clips)</div>` : `<div class="text-xs text-blue-400 text-center px-1">✦ HD quality (720p · ~5s clips)</div>`}
+      <video controls playsinline class="w-full rounded-lg border border-gray-700 bg-black"
+        style="max-height: 480px; aspect-ratio: 9/16; object-fit: contain;">
+        <source src="${videoUrl}" type="video/mp4"/>
+      </video>
+      ${isTurbo ? `
+      <button onclick="upgradeToHD()"
+        class="btn-approve w-full text-sm py-2 rounded-md font-medium flex items-center justify-center gap-2">
+        ✦ Upgrade to HD
+      </button>` : ''}
+      <a href="${videoUrl}" download="${filename}"
+        class="flex items-center justify-center gap-1.5 btn-secondary text-xs py-1.5 rounded-md w-full">
+        ⬇ Download
+      </a>`;
+    container.appendChild(div);
   } catch (e) {}
 }
 
@@ -1201,45 +1713,7 @@ function escHtml(str) {
   return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
-// ── Feedback form ──────────────────────────────────────────────────────────
-function showFeedbackForm() {
-  document.getElementById('feedback-form').classList.remove('hidden');
-  document.getElementById('feedback-text').focus();
-}
-function hideFeedbackForm() {
-  document.getElementById('feedback-form').classList.add('hidden');
-}
-
-async function submitFeedback() {
-  if (!currentProjectId) return;
-  const text = document.getElementById('feedback-text').value.trim();
-  if (!text) { toast('Please enter feedback', 'error'); return; }
-  const rating = parseInt(document.getElementById('feedback-rating').value) || null;
-
-  try {
-    hideFeedbackForm();
-    clearAgentLog();
-    _run_events_cache[currentProjectId] = [];
-    document.getElementById('agent-log').classList.remove('hidden');
-    document.getElementById('agent-log-empty').classList.add('hidden');
-    document.getElementById('feedback-btn').classList.add('hidden');
-
-    const res = await api('POST', `/api/projects/${currentProjectId}/feedback`, {
-      text, rating, replan: true
-    });
-    document.getElementById('feedback-text').value = '';
-    toast('Feedback submitted, replanning…', 'info');
-    if (res.status === 'replan_started') {
-      connectEventStream(currentProjectId);
-      const btn = document.getElementById('run-btn');
-      btn.disabled = true;
-      btn.innerHTML = '<span class="spinner">↻</span> Replanning...';
-    }
-    loadProjects();
-  } catch (e) {
-    toast(e.message, 'error');
-  }
-}
+// (feedback is now handled via chat input — submitFeedback(text) above)
 
 // ── Init DB ────────────────────────────────────────────────────────────────
 async function initDb() {
@@ -1253,11 +1727,9 @@ async function initDb() {
 
 // ── Keyboard shortcuts ─────────────────────────────────────────────────────
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter' && e.target.id === 'new-brief' && (e.metaKey || e.ctrlKey)) {
-    createProject();
-  }
-  if (e.key === 'Enter' && e.target.id === 'feedback-text' && (e.metaKey || e.ctrlKey)) {
-    submitFeedback();
+  if (e.key === 'Enter' && e.target.id === 'chat-input' && (e.metaKey || e.ctrlKey)) {
+    e.preventDefault();
+    handleChatSend();
   }
   if (e.key === 'Enter' && (e.target.id === 'api-key-input' || e.target.id === 'fal-key-input')) {
     saveApiKey();
@@ -1279,18 +1751,25 @@ function switchTab(name) {
       btn.className = 'tab-btn text-xs py-2.5 px-3 border-b-2 border-transparent text-gray-500 hover:text-gray-400';
     }
   });
-  if (name === 'plan') loadPlanView();
+  if (name === 'plan' && currentPlan) {
+    renderPlan(currentPlan, appState === 'plan_ready');
+  } else if (name === 'plan') {
+    loadPlanView();
+  }
 }
 
 async function loadPlanView() {
   if (!currentProjectId) return;
   try {
     const proj = await api('GET', `/api/projects/${currentProjectId}`);
-    renderPlan(proj.latest_plan_json);
+    if (proj.latest_plan_json) {
+      currentPlan = proj.latest_plan_json;
+      renderPlan(currentPlan, appState === 'plan_ready');
+    }
   } catch (e) {}
 }
 
-function renderPlan(plan) {
+function renderPlan(plan, editable) {
   const empty = document.getElementById('plan-empty');
   const content = document.getElementById('plan-content');
 
@@ -1306,7 +1785,7 @@ function renderPlan(plan) {
   const assetIcon = { macro: '🔬', product: '📦', lifestyle: '🌿', close: '🔍', wide: '🌅', text: '📝', transition: '✨' };
   const toneColors = { fresh: 'bg-green-900 text-green-300', playful: 'bg-yellow-900 text-yellow-300',
     premium: 'bg-purple-900 text-purple-300', strong_promo: 'bg-red-900 text-red-300',
-    funny: 'bg-orange-900 text-orange-300' };
+    promo: 'bg-red-900 text-red-300', funny: 'bg-orange-900 text-orange-300' };
 
   const tones = (plan.style_tone || []).map(t =>
     `<span class="text-xs px-2 py-0.5 rounded-full ${toneColors[t] || 'bg-gray-800 text-gray-400'}">${t}</span>`
@@ -1318,25 +1797,43 @@ function renderPlan(plan) {
 
   const storyboard = (plan.storyboard || []).map((scene, i) => {
     const shot = (plan.shot_list || [])[i] || {};
-    return `
-    <div class="card p-3 fade-in">
-      <div class="flex items-start gap-3">
-        <div class="flex-shrink-0 w-8 h-8 rounded-full bg-gray-800 flex items-center justify-center text-sm font-bold text-gray-400">${scene.scene}</div>
-        <div class="flex-1 min-w-0">
-          <div class="flex items-center gap-2 mb-1.5 flex-wrap">
-            <span class="text-xs bg-gray-800 text-gray-400 px-2 py-0.5 rounded font-mono">${assetIcon[scene.asset_hint] || '🎬'} ${scene.asset_hint || '?'}</span>
-            <span class="text-xs text-gray-600">${scene.duration}s</span>
-            ${shot.shot_id ? `<span class="text-xs text-gray-700 font-mono">${shot.shot_id}</span>` : ''}
-          </div>
-          <p class="text-sm text-gray-300 leading-relaxed">${escHtml(scene.desc)}</p>
-          ${shot.text_overlay ? `
-            <div class="mt-2 flex items-start gap-1.5">
-              <span class="text-xs text-gray-600 flex-shrink-0 mt-0.5">overlay:</span>
-              <span class="text-xs text-yellow-400 font-mono">"${escHtml(shot.text_overlay)}"</span>
-            </div>` : ''}
+    if (editable) {
+      return `
+      <div class="card p-3 fade-in" data-scene-idx="${i}">
+        <div class="flex gap-2 mb-2 items-center flex-wrap">
+          <span class="text-xs font-bold text-gray-400">Scene ${scene.scene || i+1}</span>
+          <span class="text-xs bg-gray-800 text-gray-400 px-2 py-0.5 rounded font-mono">${assetIcon[scene.asset_hint] || '🎬'} ${scene.asset_hint || '?'}</span>
+          <input type="number" data-field="duration" value="${scene.duration || 3}" min="1" max="30" step="0.5"
+            class="w-14 text-xs p-1 rounded" style="background:#0d1117;border:1px solid #30363d"/>
+          <span class="text-xs text-gray-500">s</span>
         </div>
-      </div>
-    </div>`;
+        <textarea data-field="desc" rows="3"
+          class="w-full text-sm p-2 resize-none rounded mb-1"
+          style="background:#0d1117;border:1px solid #30363d">${escHtml(scene.desc)}</textarea>
+        <input data-field="overlay" type="text" value="${escHtml(shot.text_overlay || '')}"
+          placeholder="Text overlay (optional)"
+          class="w-full text-xs p-1.5 rounded" style="background:#0d1117;border:1px solid #30363d"/>
+      </div>`;
+    } else {
+      return `
+      <div class="card p-3 fade-in">
+        <div class="flex items-start gap-3">
+          <div class="flex-shrink-0 w-8 h-8 rounded-full bg-gray-800 flex items-center justify-center text-sm font-bold text-gray-400">${scene.scene || i+1}</div>
+          <div class="flex-1 min-w-0">
+            <div class="flex items-center gap-2 mb-1.5 flex-wrap">
+              <span class="text-xs bg-gray-800 text-gray-400 px-2 py-0.5 rounded font-mono">${assetIcon[scene.asset_hint] || '🎬'} ${scene.asset_hint || '?'}</span>
+              <span class="text-xs text-gray-600">${scene.duration}s</span>
+            </div>
+            <p class="text-sm text-gray-300 leading-relaxed">${escHtml(scene.desc)}</p>
+            ${shot.text_overlay ? `
+              <div class="mt-2 flex items-start gap-1.5">
+                <span class="text-xs text-gray-600 flex-shrink-0 mt-0.5">overlay:</span>
+                <span class="text-xs text-yellow-400 font-mono">"${escHtml(shot.text_overlay)}"</span>
+              </div>` : ''}
+          </div>
+        </div>
+      </div>`;
+    }
   }).join('');
 
   const totalDuration = (plan.storyboard || []).reduce((s, sc) => s + (sc.duration || 0), 0).toFixed(1);
@@ -1380,7 +1877,7 @@ function renderPlan(plan) {
     <!-- Storyboard -->
     <div>
       <h3 class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">
-        Storyboard · ${(plan.storyboard || []).length} scenes
+        Storyboard · ${(plan.storyboard || []).length} scenes${editable ? ' — <span class="text-blue-400 normal-case font-normal">editable</span>' : ''}
       </h3>
       <div class="space-y-2">${storyboard}</div>
     </div>
@@ -1458,8 +1955,10 @@ async function updateApiStatus() {
 }
 
 // ── Init ───────────────────────────────────────────────────────────────────
+setAppState('idle');
 loadProjects();
 updateApiStatus();
+document.getElementById('chat-input').focus();
 // Refresh project list every 10s
 setInterval(loadProjects, 10000);
 </script>
