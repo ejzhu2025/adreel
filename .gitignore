@@ -1,0 +1,28 @@
+# Environment
+.env
+*.env
+
+# Generated data
+data/
+*.mp4
+*.srt
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+.venv/
+venv/
+env/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
