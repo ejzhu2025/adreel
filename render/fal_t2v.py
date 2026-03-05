@@ -23,22 +23,33 @@ _QUALITY_PRESETS = {
 def generate_clip(prompt: str, output_path: str, duration: float = 3.5, quality: str = "turbo") -> str:
     """Call T2V, download result to output_path. quality='turbo'|'hd'."""
     preset = _QUALITY_PRESETS.get(quality, _QUALITY_PRESETS["turbo"])
-    result = fal_client.run(
-        preset["model"],
-        arguments={
-            "prompt": prompt,
-            "num_frames": preset["num_frames"],
-            "frames_per_second": 16,
-            "resolution": preset["resolution"],
-            "aspect_ratio": "9:16",
-        },
-    )
-    if "video" in result:
-        url = result["video"]["url"]
-    elif "videos" in result and result["videos"]:
-        url = result["videos"][0]["url"]
-    else:
-        raise ValueError(f"Unexpected T2V response: {list(result.keys())}")
+    url = None
+    try:
+        result = fal_client.run(
+            preset["model"],
+            arguments={
+                "prompt": prompt,
+                "num_frames": preset["num_frames"],
+                "frames_per_second": 16,
+                "resolution": preset["resolution"],
+                "aspect_ratio": "9:16",
+            },
+        )
+        if "video" in result:
+            url = result["video"]["url"]
+        elif "videos" in result and result["videos"]:
+            url = result["videos"][0]["url"]
+        else:
+            raise ValueError(f"Unexpected T2V response: {list(result.keys())}")
+    except Exception as e:
+        # fal.ai interpolation sometimes fails after the base video is generated.
+        # Extract the original video URL from the error message if present.
+        import re
+        match = re.search(r'https://fal\.media/files/[^\s\'"]+\.mp4', str(e))
+        if match:
+            url = match.group(0)
+        else:
+            raise
 
     with httpx.Client(timeout=180, follow_redirects=True) as client:
         resp = client.get(url)

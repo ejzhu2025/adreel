@@ -17,6 +17,7 @@ from agent.nodes.plan_checker import plan_checker
 from agent.nodes.executor_pipeline import executor_pipeline
 from agent.nodes.caption_agent import caption_agent
 from agent.nodes.layout_branding import layout_branding
+from agent.nodes.music_mixer import music_mixer
 from agent.nodes.quality_gate import quality_gate
 from agent.nodes.qc_diagnose import qc_diagnose
 from agent.nodes.render_export import render_export
@@ -70,6 +71,7 @@ def build_graph() -> Any:
     workflow.add_node("executor_pipeline", executor_pipeline)
     workflow.add_node("caption_agent", caption_agent)
     workflow.add_node("layout_branding", layout_branding)
+    workflow.add_node("music_mixer", music_mixer)
     workflow.add_node("quality_gate", quality_gate)
     workflow.add_node("qc_diagnose", qc_diagnose)
     workflow.add_node("render_export", render_export)
@@ -85,7 +87,8 @@ def build_graph() -> Any:
     workflow.add_edge("ask_user", "planner_llm")
     workflow.add_edge("executor_pipeline", "caption_agent")
     workflow.add_edge("caption_agent", "layout_branding")
-    workflow.add_edge("layout_branding", "quality_gate")
+    workflow.add_edge("layout_branding", "music_mixer")
+    workflow.add_edge("music_mixer", "quality_gate")
     workflow.add_edge("render_export", "result_summarizer")
     workflow.add_edge("result_summarizer", "memory_writer")
     workflow.add_edge("memory_writer", END)
@@ -167,6 +170,7 @@ def build_execute_only_graph() -> Any:
     workflow.add_node("executor_pipeline", executor_pipeline)
     workflow.add_node("caption_agent", caption_agent)
     workflow.add_node("layout_branding", layout_branding)
+    workflow.add_node("music_mixer", music_mixer)
     workflow.add_node("quality_gate", quality_gate)
     workflow.add_node("qc_diagnose", qc_diagnose)
     workflow.add_node("render_export", render_export)
@@ -177,7 +181,8 @@ def build_execute_only_graph() -> Any:
 
     workflow.add_edge("executor_pipeline", "caption_agent")
     workflow.add_edge("caption_agent", "layout_branding")
-    workflow.add_edge("layout_branding", "quality_gate")
+    workflow.add_edge("layout_branding", "music_mixer")
+    workflow.add_edge("music_mixer", "quality_gate")
     workflow.add_edge("render_export", "result_summarizer")
     workflow.add_edge("result_summarizer", "memory_writer")
     workflow.add_edge("memory_writer", END)
@@ -215,6 +220,7 @@ def build_partial_rerender_graph() -> Any:
     workflow.add_node("executor_pipeline", executor_pipeline)
     workflow.add_node("caption_agent", caption_agent)
     workflow.add_node("layout_branding", layout_branding)
+    workflow.add_node("music_mixer", music_mixer)
     workflow.add_node("quality_gate", quality_gate)
     workflow.add_node("qc_diagnose", qc_diagnose)
     workflow.add_node("render_export", render_export)
@@ -244,7 +250,8 @@ def build_partial_rerender_graph() -> Any:
 
     # Shared tail
     workflow.add_edge("caption_agent", "layout_branding")
-    workflow.add_edge("layout_branding", "quality_gate")
+    workflow.add_edge("layout_branding", "music_mixer")
+    workflow.add_edge("music_mixer", "quality_gate")
     workflow.add_conditional_edges(
         "quality_gate",
         _route_quality_gate,
@@ -273,6 +280,7 @@ def build_replan_graph() -> Any:
     workflow.add_node("executor_pipeline", executor_pipeline)
     workflow.add_node("caption_agent", caption_agent)
     workflow.add_node("layout_branding", layout_branding)
+    workflow.add_node("music_mixer", music_mixer)
     workflow.add_node("quality_gate", quality_gate)
     workflow.add_node("qc_diagnose", qc_diagnose)
     workflow.add_node("render_export", render_export)
@@ -289,7 +297,8 @@ def build_replan_graph() -> Any:
     )
     workflow.add_edge("executor_pipeline", "caption_agent")
     workflow.add_edge("caption_agent", "layout_branding")
-    workflow.add_edge("layout_branding", "quality_gate")
+    workflow.add_edge("layout_branding", "music_mixer")
+    workflow.add_edge("music_mixer", "quality_gate")
     workflow.add_conditional_edges(
         "quality_gate",
         _route_quality_gate,

@@ -39,6 +39,9 @@ class AgentState(TypedDict, total=False):
     qc_user_message: str                # human-readable explanation
     needs_user_action: bool             # stop pipeline and show message to user
 
+    # ── Music ─────────────────────────────────────────────────────────────────
+    music_track_path: str               # empty string = skipped
+
     # ── Output ────────────────────────────────────────────────────────────────
     output_path: str
     summary: str

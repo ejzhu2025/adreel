@@ -207,8 +207,59 @@ class FFmpegComposer:
         ]
         self._run(cmd)
 
+    # ── Mix background music ──────────────────────────────────────────────────
+
+    def mix_audio_track(
+        self,
+        video_path: str,
+        music_path: str,
+        output_path: str,
+        music_volume: float = 0.15,
+        fade_duration: float = 2.0,
+    ) -> None:
+        """Add background music to a (silent) video with volume control and fade-out."""
+        info = _probe_duration(video_path)
+        duration = info or 20.0
+        fade_start = max(0.0, duration - fade_duration)
+
+        # Videos are silent (no audio track), so use music directly as sole audio.
+        af = (
+            f"[1:a]volume={music_volume},"
+            f"afade=t=out:st={fade_start:.2f}:d={fade_duration:.2f}[a]"
+        )
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", video_path,
+            "-stream_loop", "-1",
+            "-i", music_path,
+            "-filter_complex", af,
+            "-map", "0:v",
+            "-map", "[a]",
+            "-c:v", "copy",
+            "-c:a", "aac",
+            "-b:a", "192k",
+            "-shortest",
+            output_path,
+        ]
+        self._run(cmd, timeout=180)
+
 
 def _opacity_to_ass(opacity: float) -> str:
     """Convert 0.0-1.0 opacity to ASS alpha hex (inverted: 0=opaque, FF=transparent)."""
     alpha = int((1.0 - opacity) * 255)
     return f"{alpha:02X}"
+
+
+def _probe_duration(path: str) -> float | None:
+    """Return video duration in seconds via ffprobe, or None on failure."""
+    import json as _json
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", path],
+            capture_output=True, text=True, timeout=15,
+        )
+        data = _json.loads(result.stdout)
+        val = data.get("format", {}).get("duration")
+        return float(val) if val else None
+    except Exception:
+        return None
