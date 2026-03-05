@@ -1,0 +1,137 @@
+[
+  {
+    "id": "p001",
+    "category": "product_promo",
+    "brief": "Promote our Tong Sui Coconut Milk drink in a 15-second vertical video. Show the creamy texture and tropical ingredients. Target young adults who love Asian desserts.",
+    "clarification_answers": {},
+    "expected_keywords": ["coconut", "creamy", "tropical", "dessert", "smooth"],
+    "expected_shots": 4,
+    "notes": "baseline product promo, 15s"
+  },
+  {
+    "id": "p002",
+    "category": "product_promo",
+    "brief": "Create a 20-second promo for our new Mango Pomelo Sago drink. Highlight the fresh mango chunks, pomelo pearls, and sago balls. Feel should be premium and indulgent.",
+    "clarification_answers": {},
+    "expected_keywords": ["mango", "pomelo", "sago", "premium", "fresh"],
+    "expected_shots": 4,
+    "notes": "20s with ingredient callouts"
+  },
+  {
+    "id": "p003",
+    "category": "product_promo",
+    "brief": "Show our Black Sesame Walnut drink as the perfect winter warm-up. 15-second cozy vibes, steam rising, comfort food aesthetic. Appeal to health-conscious customers.",
+    "clarification_answers": {},
+    "expected_keywords": ["black sesame", "walnut", "warm", "cozy", "health"],
+    "expected_shots": 4,
+    "notes": "seasonal, warm tone"
+  },
+  {
+    "id": "p004",
+    "category": "product_promo",
+    "brief": "Launch video for our Red Bean Matcha Latte. 20 seconds, showing the layered pour, rich red bean, and premium matcha powder. Target matcha lovers on social media.",
+    "clarification_answers": {},
+    "expected_keywords": ["red bean", "matcha", "latte", "layered", "premium"],
+    "expected_shots": 4,
+    "notes": "product launch, 20s"
+  },
+  {
+    "id": "p005",
+    "category": "product_promo",
+    "brief": "Quick 15-second TikTok promo for our Durian Ice Cream Mochi balls. Fun energetic tone, show the durian filling oozing out. Bold, quirky, memorable.",
+    "clarification_answers": {},
+    "expected_keywords": ["durian", "mochi", "ice cream", "fun", "filling"],
+    "expected_shots": 4,
+    "notes": "short-form TikTok style"
+  },
+  {
+    "id": "p006",
+    "category": "lifestyle",
+    "brief": "Morning fitness motivation video, 20 seconds. Show someone doing a 5AM workout routine — stretching, running, protein shake. Energetic music vibe, sunrise backdrop.",
+    "clarification_answers": {},
+    "expected_keywords": ["workout", "morning", "fitness", "protein", "energy"],
+    "expected_shots": 4,
+    "notes": "fitness lifestyle"
+  },
+  {
+    "id": "p007",
+    "category": "lifestyle",
+    "brief": "Solo travel vlog highlight for Kyoto Japan, 20 seconds. Cherry blossoms, temple visits, street food. Dreamy cinematic feel, peaceful soundtrack.",
+    "clarification_answers": {},
+    "expected_keywords": ["Kyoto", "cherry blossom", "temple", "travel", "Japan"],
+    "expected_shots": 4,
+    "notes": "travel lifestyle"
+  },
+  {
+    "id": "p008",
+    "category": "lifestyle",
+    "brief": "Healthy meal prep Sunday video, 15 seconds. Show colorful veggies, portioning meals, organized fridge. Clean aesthetic, wellness brand feel.",
+    "clarification_answers": {},
+    "expected_keywords": ["meal prep", "healthy", "vegetables", "wellness", "organized"],
+    "expected_shots": 4,
+    "notes": "food and wellness"
+  },
+  {
+    "id": "p009",
+    "category": "lifestyle",
+    "brief": "Skincare evening routine, 20 seconds. Show cleansing, serum application, moisturizer steps. Soft lighting, minimal aesthetic, luxury feel targeting women 25-35.",
+    "clarification_answers": {},
+    "expected_keywords": ["skincare", "serum", "routine", "moisturizer", "glow"],
+    "expected_shots": 4,
+    "notes": "beauty lifestyle"
+  },
+  {
+    "id": "p010",
+    "category": "lifestyle",
+    "brief": "Home coffee ritual, 15 seconds. Barista-style pour over at home, specialty beans, latte art. Cozy morning atmosphere, slow living aesthetic.",
+    "clarification_answers": {},
+    "expected_keywords": ["coffee", "pour over", "barista", "morning", "cozy"],
+    "expected_shots": 4,
+    "notes": "coffee lifestyle"
+  },
+  {
+    "id": "p011",
+    "category": "brand_awareness",
+    "brief": "Brand awareness video for a B2B SaaS startup helping teams collaborate with AI. 20 seconds. Show the problem (messy meetings) then solution (clean dashboard). Professional tone.",
+    "clarification_answers": {},
+    "expected_keywords": ["AI", "collaboration", "dashboard", "team", "productivity"],
+    "expected_shots": 4,
+    "notes": "tech startup B2B"
+  },
+  {
+    "id": "p012",
+    "category": "brand_awareness",
+    "brief": "NGO impact video for a reforestation charity. 20 seconds. Show the problem of deforestation, volunteers planting trees, healthy forest recovery. Emotional and inspiring.",
+    "clarification_answers": {},
+    "expected_keywords": ["trees", "forest", "reforestation", "volunteers", "environment"],
+    "expected_shots": 4,
+    "notes": "non-profit emotional appeal"
+  },
+  {
+    "id": "p013",
+    "category": "brand_awareness",
+    "brief": "Fashion brand awareness for sustainable streetwear. 15 seconds. Show the manufacturing process, eco-friendly materials, stylish models. Young urban audience.",
+    "clarification_answers": {},
+    "expected_keywords": ["sustainable", "streetwear", "eco", "fashion", "urban"],
+    "expected_shots": 4,
+    "notes": "fashion brand"
+  },
+  {
+    "id": "p014",
+    "category": "brand_awareness",
+    "brief": "Restaurant brand video for a modern Cantonese fine dining restaurant. 20 seconds. Show the chef, signature dishes, elegant interior. Upscale Hong Kong vibe.",
+    "clarification_answers": {},
+    "expected_keywords": ["Cantonese", "chef", "restaurant", "elegant", "dining"],
+    "expected_shots": 4,
+    "notes": "restaurant fine dining"
+  },
+  {
+    "id": "p015",
+    "category": "brand_awareness",
+    "brief": "Online education platform brand video, 20 seconds. Show diverse students learning, interactive lessons, certificate achievement. Empowering and accessible tone.",
+    "clarification_answers": {},
+    "expected_keywords": ["education", "learning", "students", "certificate", "online"],
+    "expected_shots": 4,
+    "notes": "edtech brand"
+  }
+]

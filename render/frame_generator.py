@@ -60,24 +60,31 @@ class FrameGenerator:
         scene_index: int = 0,
         is_intro: bool = False,
         is_outro: bool = False,
+        background_image_path: str = "",
+        logo_path: str = "",
     ) -> Path:
         W, H = 1080, 1920
-        img = Image.new("RGB", (W, H), color="#1A1A2E")
-        draw = ImageDraw.Draw(img, "RGBA")
 
-        # Background gradient
-        self._draw_gradient(draw, W, H, shot_type, scene_index)
+        if background_image_path and os.path.exists(background_image_path):
+            # Use AI-generated background — open, resize to 9:16
+            img = Image.open(background_image_path).convert("RGB").resize((W, H))
+            draw = ImageDraw.Draw(img, "RGBA")
+            # Subtle dark vignette at edges so text pops
+            self._draw_vignette(draw, W, H)
+        else:
+            img = Image.new("RGB", (W, H), color="#1A1A2E")
+            draw = ImageDraw.Draw(img, "RGBA")
+            # Background gradient + decorative shape (PIL-only mode)
+            self._draw_gradient(draw, W, H, shot_type, scene_index)
+            self._draw_decor(draw, W, H, shot_type, scene_index)
 
-        # Decorative shape (circle / ring)
-        self._draw_decor(draw, W, H, shot_type, scene_index)
+        # Outro: embed logo image centered at top third
+        if is_outro and logo_path and os.path.exists(logo_path):
+            self._draw_logo(img, W, H, logo_path)
 
-        # Main text overlay (shot text_overlay)
+        # Main text overlay
         if text_overlay:
             self._draw_text_block(draw, W, H, text_overlay, is_cta=is_outro)
-
-        # Shot ID badge (small, top-left — dev helper)
-        badge_font = self._get_font(28)
-        draw.text((30, H - 60), shot_id, font=badge_font, fill=(255, 255, 255, 120))
 
         out_path = self.work_dir / f"{shot_id}_frame.png"
         img.save(str(out_path), "PNG")
@@ -85,16 +92,115 @@ class FrameGenerator:
 
     # ── Private helpers ───────────────────────────────────────────────────────
 
+    def generate_brand_overlay(
+        self,
+        output_path: str,
+        logo_path: str,
+        cta_text: str,
+        W: int = 1080,
+        H: int = 1920,
+    ) -> str:
+        """Generate a transparent RGBA PNG with logo + CTA text for FFmpeg overlay.
+
+        The overlay is designed to sit on top of an I2V video:
+        - Logo centered at upper-third (y ≈ 28%)
+        - CTA text centered at lower quarter (y ≈ 75%) with semi-transparent box
+        """
+        img = Image.new("RGBA", (W, H), (0, 0, 0, 0))  # fully transparent
+        draw = ImageDraw.Draw(img, "RGBA")
+
+        # ── Logo ──────────────────────────────────────────────────────────────
+        if logo_path and os.path.exists(logo_path):
+            try:
+                logo = Image.open(logo_path).convert("RGBA")
+                max_w = 300
+                ratio = min(max_w / logo.width, max_w / logo.height)
+                lw, lh = int(logo.width * ratio), int(logo.height * ratio)
+                logo = logo.resize((lw, lh), Image.LANCZOS)
+                lx = (W - lw) // 2
+                ly = int(H * 0.28) - lh // 2
+                img.paste(logo, (lx, ly), logo)
+            except Exception:
+                pass  # skip logo if it can't be loaded
+
+        # ── CTA text box ──────────────────────────────────────────────────────
+        if cta_text:
+            sub_style = self.subtitle_style
+            font_size = sub_style.get("font_size", 52)
+            box_opacity = int(sub_style.get("box_opacity", 0.65) * 255)
+            padding = sub_style.get("padding_px", 18)
+            box_radius = sub_style.get("box_radius", 14)
+
+            font = self._get_font(font_size)
+            lines = cta_text.split("\n")
+            line_widths, line_heights = [], []
+            for line in lines:
+                bbox = draw.textbbox((0, 0), line, font=font)
+                line_widths.append(bbox[2] - bbox[0])
+                line_heights.append(bbox[3] - bbox[1])
+
+            block_w = max(line_widths) + padding * 2
+            block_h = sum(line_heights) + padding * 2 + (len(lines) - 1) * 8
+            box_x = (W - block_w) // 2
+            box_y = int(H * 0.75) - block_h // 2
+
+            _draw_rounded_rect(draw, box_x, box_y, block_w, block_h, box_radius,
+                               (0, 0, 0, box_opacity))
+
+            accent = _hex_to_rgb(self.colors.get("accent", "#FF7675"))
+            y_cursor = box_y + padding
+            for i, line in enumerate(lines):
+                color = (*accent, 255) if i == len(lines) - 1 else (255, 255, 255, 255)
+                x = box_x + (block_w - line_widths[i]) // 2
+                draw.text((x, y_cursor), line, font=font, fill=color)
+                y_cursor += line_heights[i] + 8
+
+        img.save(output_path, "PNG")
+        return output_path
+
+    def _draw_vignette(self, draw: ImageDraw.ImageDraw, W: int, H: int) -> None:
+        """Soft dark vignette around edges so overlaid text is readable."""
+        steps = 80
+        for i in range(steps):
+            alpha = int(120 * (i / steps) ** 2)
+            margin = i * 6
+            draw.rectangle(
+                [(margin, margin), (W - margin, H - margin)],
+                outline=(0, 0, 0, alpha),
+                width=6,
+            )
+
+    def _draw_logo(self, img: Image.Image, W: int, H: int, logo_path: str) -> None:
+        """Embed logo centered at the upper third of the frame."""
+        try:
+            logo = Image.open(logo_path).convert("RGBA")
+            # Scale to max 320px wide, keep aspect ratio
+            max_w = 320
+            ratio = min(max_w / logo.width, max_w / logo.height)
+            lw = int(logo.width * ratio)
+            lh = int(logo.height * ratio)
+            logo = logo.resize((lw, lh), Image.LANCZOS)
+            x = (W - lw) // 2
+            y = int(H * 0.28) - lh // 2  # upper-third center
+            img.paste(logo, (x, y), logo)
+        except Exception:
+            pass  # silently skip if logo can't be loaded
+
     def _draw_gradient(self, draw: ImageDraw.ImageDraw, W: int, H: int, shot_type: str, idx: int) -> None:
         gradients = _TYPE_GRADIENTS.get(shot_type, _TYPE_GRADIENTS["wide"])
         top_hex, bot_hex = gradients[0]
-        top = _hex_to_rgb(self.colors.get("primary", top_hex))
-        bot = _hex_to_rgb(self.colors.get("background", bot_hex))
 
-        # Override with shot-type palette if index is non-zero
-        if idx % 2 == 1:
-            top = _hex_to_rgb(top_hex)
-            bot = _hex_to_rgb(bot_hex)
+        # text/transition shots always use brand colors (never fall back to gray palette)
+        if shot_type in ("text", "transition"):
+            top = _hex_to_rgb(self.colors.get("primary", top_hex))
+            bot = _hex_to_rgb(self.colors.get("background", bot_hex))
+        else:
+            top = _hex_to_rgb(self.colors.get("primary", top_hex))
+            bot = _hex_to_rgb(self.colors.get("background", bot_hex))
+            # Alternate palette on odd-indexed shots for visual variety
+            if idx % 2 == 1:
+                top = _hex_to_rgb(top_hex)
+                bot = _hex_to_rgb(bot_hex)
 
         for y in range(H):
             r = int(top[0] + (bot[0] - top[0]) * y / H)

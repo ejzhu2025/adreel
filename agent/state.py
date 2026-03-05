@@ -54,6 +54,9 @@ class AgentState(TypedDict, total=False):
     # ── Generation quality ────────────────────────────────────────────────────
     quality: str                        # "turbo" | "hd"
 
+    # ── Assets ────────────────────────────────────────────────────────────────
+    product_image_path: str             # absolute path to project-level product photo
+
     # ── Control ───────────────────────────────────────────────────────────────
     needs_replan: bool
     error: Optional[str]

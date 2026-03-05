@@ -48,6 +48,15 @@ Rules:
 - Match brand tone and style
 - Keep text_overlay short (max 8 words)
 - duration_sec should equal the sum of all shot durations
+
+CRITICAL — storyboard desc rules:
+- "desc" fields describe ONLY visual scene elements: motion, lighting, composition, colors, environment, camera angle, textures
+- NEVER mention text, captions, logos, watermarks, overlays, written words, taglines, slogans, or any on-screen graphics in desc
+- NEVER use words like: "text appears", "logo shown", "caption", "title card", "CTA", "branded graphic", "overlay", "tagline", "branded cup", "branded bottle", "branding"
+- NEVER use the word "branded" — say "product cup", "product bottle", "the drink" instead
+- Text content belongs EXCLUSIVELY in "text_overlay" fields, never in "desc"
+- Last shot type must always be "text" (outro brand card rendered with PIL, not AI video)
+- For "text" type shots, desc should describe an abstract visual background only (colors, mood, bokeh)
 """
 
 PLANNER_USER_TEMPLATE = """Brief: {brief}
@@ -208,10 +217,10 @@ def _mock_plan(
 
     # 4 shots, trim durations 0.5–2s each
     scene_descs = [
-        ("Macro shot of coconut and watermelon slices with water droplets", "macro"),
-        ("Product bottle center frame, vibrant background", "product"),
-        ("Lifestyle: someone holding the drink at a summer pool", "lifestyle"),
-        ("Outro: CTA with logo and product", "product"),
+        ("Macro shot of coconut and watermelon slices with water droplets, vibrant colors, studio lighting", "macro"),
+        ("Product bottle center frame, clean vibrant background, slow rotation, cinematic lighting", "product"),
+        ("Lifestyle shot, someone holding the drink at a summer poolside, golden hour lighting", "lifestyle"),
+        ("Abstract brand background, deep green and dark tones, soft bokeh, elegant minimal", "text"),
     ]
     trim_durations = [1.5, 1.0, 2.0, 1.0]  # total 5.5s
 

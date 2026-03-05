@@ -26,3 +26,7 @@ build/
 # IDE
 .vscode/
 .idea/
+
+# Eval reports
+eval/run_reports/*.jsonl
+eval/run_reports/*.csv

@@ -40,22 +40,11 @@ def layout_branding(state: dict[str, Any]) -> dict[str, Any]:
         subtitle_style=subtitle_style,
     )
 
-    # 4. Add logo watermark
-    logo_path = brand_kit.get("logo", {}).get("path", "assets/tong_sui_logo.png")
-    safe_area = brand_kit.get("logo", {}).get("safe_area", "top_right")
+    # 4. Logo is embedded directly into the outro PIL frame (plan A).
+    #    No full-video watermark overlay — copy with_subs as branded.
     branded_path = str(work_dir / "branded.mp4")
-
-    if Path(logo_path).exists():
-        fc.add_watermark(
-            input_path=with_subs_path,
-            logo_path=logo_path,
-            output_path=branded_path,
-            position=safe_area,
-        )
-    else:
-        # No logo available — just copy
-        import shutil
-        shutil.copy(with_subs_path, branded_path)
+    import shutil
+    shutil.copy(with_subs_path, branded_path)
 
     messages = state.get("messages", [])
     messages.append(

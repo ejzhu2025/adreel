@@ -15,10 +15,10 @@ console = Console()
 
 # Keyword → tone mapping for auto-selection
 _TONE_MAP: dict[str, list[str]] = {
-    "upbeat":   ["energetic", "fun", "fast", "exciting", "fitness", "dance", "sport"],
-    "warm":     ["cozy", "warm", "comfort", "food", "dessert", "coffee", "homey"],
-    "chill":    ["calm", "relax", "lifestyle", "travel", "wellness", "skincare", "peaceful"],
-    "dramatic": ["bold", "premium", "luxury", "launch", "brand", "impact", "power"],
+    "upbeat":   ["energetic", "fun", "fast", "exciting", "fitness", "dance", "sport", "dynamic", "vibrant", "lively"],
+    "warm":     ["cozy", "warm", "comfort", "food", "dessert", "coffee", "homey", "fresh", "playful", "sweet"],
+    "chill":    ["calm", "relax", "lifestyle", "travel", "wellness", "skincare", "peaceful", "minimal", "clean", "soft"],
+    "dramatic": ["bold", "premium", "luxury", "launch", "brand", "impact", "power", "cinematic", "epic", "intense"],
 }
 
 _TONE_PROMPTS: dict[str, str] = {
@@ -32,11 +32,18 @@ _TONE_PROMPTS: dict[str, str] = {
 _REPLICATE_MODEL = "meta/musicgen:671ac645ce5e552cc63a54a2bbff63fcf798043055d2dac5fc9e36a837eedcfb"
 
 
-def _select_tone(brief: str, style_tone: str) -> str:
-    text = f"{brief} {style_tone}".lower()
+def _select_tone(brief: str, style_tone: str | list) -> str:
+    # style_tone from clarification answers takes priority (it's user-confirmed)
+    if isinstance(style_tone, list):
+        style_tone_str = " ".join(style_tone)
+    else:
+        style_tone_str = str(style_tone)
+
+    # Score against both style_tone (weighted 3x) and brief (1x)
+    text = f"{style_tone_str} {style_tone_str} {style_tone_str} {brief}".lower()
     scores = {tone: sum(kw in text for kw in kws) for tone, kws in _TONE_MAP.items()}
     best = max(scores, key=lambda t: scores[t])
-    return best if scores[best] > 0 else "chill"
+    return best if scores[best] > 0 else "warm"
 
 
 def _generate_via_replicate(prompt: str, duration: int) -> str | None:
@@ -79,7 +86,11 @@ def music_mixer(state: dict[str, Any]) -> dict[str, Any]:
 
     brief = state.get("brief", "")
     plan = state.get("plan", {})
-    style_tone = plan.get("style_tone", "")
+    # Prefer user-confirmed style_tone from clarification, fall back to plan field
+    style_tone = (
+        state.get("clarification_answers", {}).get("style_tone")
+        or plan.get("style_tone", "")
+    )
     tone = _select_tone(brief, style_tone)
     prompt = _TONE_PROMPTS[tone]
 

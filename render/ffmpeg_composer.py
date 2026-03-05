@@ -133,7 +133,7 @@ class FFmpegComposer:
         logo_path: str,
         output_path: str,
         position: str = "top_right",
-        scale_w: int = 120,
+        scale_w: int = 200,
     ) -> None:
         """Overlay a logo at the specified safe-area position."""
         margin = 40
@@ -161,6 +161,27 @@ class FFmpegComposer:
         except RuntimeError:
             import shutil
             shutil.copy(input_path, output_path)
+
+    # ── Brand overlay on I2V video ────────────────────────────────────────────
+
+    def overlay_brand_on_video(
+        self,
+        video_path: str,
+        overlay_png: str,
+        output_path: str,
+    ) -> None:
+        """Composite a transparent RGBA PNG (logo + CTA) onto a video clip."""
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", video_path,
+            "-i", overlay_png,
+            "-filter_complex", "[1:v]format=rgba[ov];[0:v][ov]overlay=0:0",
+            "-c:v", "libx264",
+            "-preset", "ultrafast",
+            "-an",
+            output_path,
+        ]
+        self._run(cmd, timeout=120)
 
     # ── Trim + scale a video clip ─────────────────────────────────────────────
 

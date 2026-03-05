@@ -85,6 +85,17 @@ class Database:
             return None
         return BrandKit.model_validate_json(row["json"])
 
+    def list_brand_kits(self) -> list[BrandKit]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT json FROM brand_kits ORDER BY updated_at DESC"
+            ).fetchall()
+        return [BrandKit.model_validate_json(row["json"]) for row in rows]
+
+    def delete_brand_kit(self, brand_id: str) -> None:
+        with self._conn() as conn:
+            conn.execute("DELETE FROM brand_kits WHERE brand_id=?", (brand_id,))
+
     # ── User prefs ────────────────────────────────────────────────────────────
 
     def upsert_user_prefs(self, prefs: UserPrefs) -> None:

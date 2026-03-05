@@ -83,10 +83,23 @@ def quality_gate(state: dict[str, Any]) -> dict[str, Any]:
                 auto_fix_applied = True
                 break
 
-    # 6. Logo file existence
+    # 6. Logo file existence + integrity
     logo_path = brand_kit.get("logo", {}).get("path", "")
     if logo_path and not Path(logo_path).exists():
         issues.append(f"Logo file missing: {logo_path}")
+    elif logo_path and Path(logo_path).exists():
+        size = Path(logo_path).stat().st_size
+        if size < 67:  # 67B is the absolute minimum valid PNG size
+            issues.append(f"Logo file too small ({size}B) — may be corrupt")
+        else:
+            try:
+                from PIL import Image
+                with Image.open(logo_path) as img:
+                    w, h = img.size
+                    if w < 20 or h < 20:
+                        issues.append(f"Logo too small ({w}×{h}px) — min 20×20")
+            except Exception as exc:
+                issues.append(f"Logo file unreadable: {exc}")
 
     passed = len(issues) == 0 or (auto_fix_applied and attempt < MAX_ATTEMPTS)
 

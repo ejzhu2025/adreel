@@ -19,13 +19,15 @@ load_dotenv()
 # Add project root to path so we can import agent.*
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 import agent.deps as deps
+from web.brand_kit_api import router as brand_kit_router
 
 app = FastAPI(title="Video Agent Hero")
+app.include_router(brand_kit_router)
 
 # ── In-memory SSE state ───────────────────────────────────────────────────────
 
@@ -65,12 +67,14 @@ async def startup():
                 intro_duration_sec=1.5, outro_duration_sec=2.0,
             ),
         )
-        db.upsert_brand_kit(tong_sui)
+        if not db.get_brand_kit("tong_sui"):
+            db.upsert_brand_kit(tong_sui)
         ej = UserPrefs(
             user_id="ej", default_platform="tiktok", preferred_duration_sec=20,
             tone=["fresh", "playful", "premium"], pacing="fast", shot_density=7, cta_style="soft",
         )
-        db.upsert_user_prefs(ej)
+        if not db.get_user_prefs("ej"):
+            db.upsert_user_prefs(ej)
     except Exception as e:
         print(f"[startup] brand kit seed skipped: {e}", flush=True)
 
@@ -240,7 +244,41 @@ async def get_project(project_id: str):
     proj = deps.db().get_project(project_id)
     if not proj:
         raise HTTPException(status_code=404, detail="Project not found")
+    # Attach product image flag so frontend knows to show thumbnail
+    data_dir = Path(os.environ.get("VAH_DATA_DIR", "./data"))
+    product_path = data_dir / "projects" / project_id / "product.png"
+    proj["has_product_image"] = product_path.exists()
     return proj
+
+
+def _get_project_product_image_path(project_id: str) -> str:
+    data_dir = Path(os.environ.get("VAH_DATA_DIR", "./data"))
+    p = data_dir / "projects" / project_id / "product.png"
+    return str(p) if p.exists() else ""
+
+
+@app.post("/api/projects/{project_id}/product-image")
+async def upload_project_product_image(project_id: str, file: UploadFile = File(...)):
+    proj = deps.db().get_project(project_id)
+    if not proj:
+        raise HTTPException(status_code=404, detail="Project not found")
+    content = await file.read()
+    if len(content) < 10:
+        raise HTTPException(status_code=400, detail="File too small")
+    data_dir = Path(os.environ.get("VAH_DATA_DIR", "./data"))
+    proj_dir = data_dir / "projects" / project_id
+    proj_dir.mkdir(parents=True, exist_ok=True)
+    product_path = proj_dir / "product.png"
+    product_path.write_bytes(content)
+    return {"status": "ok", "path": str(product_path)}
+
+
+@app.get("/api/projects/{project_id}/product-image")
+async def get_project_product_image(project_id: str):
+    path = _get_project_product_image_path(project_id)
+    if not path:
+        raise HTTPException(status_code=404, detail="No product image for this project")
+    return FileResponse(path)
 
 
 @app.post("/api/projects/{project_id}/run")
@@ -494,6 +532,7 @@ async def submit_feedback(project_id: str, req: FeedbackRequest, background_task
     queue: asyncio.Queue = asyncio.Queue()
     _run_queues[project_id] = queue
     _run_events[project_id] = []
+    from agent.graph import build_replan_graph
     deps.db().update_project_status(project_id, "running")
     background_tasks.add_task(
         _run_agent_with_state, project_id=project_id,
@@ -592,6 +631,11 @@ async def _run_agent(
             "assets_available": "none",
         }
 
+    # Attach project-level product image if uploaded
+    product_img = _get_project_product_image_path(project_id)
+    if product_img:
+        initial_state["product_image_path"] = product_img
+
     from agent.graph import build_graph
     await _run_agent_with_state(project_id, initial_state, queue, graph_fn=build_graph)
 
@@ -604,6 +648,11 @@ async def _run_agent_with_state(
     replan: bool = False,
     on_node: Any = None,
 ):
+    # Inject project-level product image for all execution paths
+    if "product_image_path" not in initial_state:
+        img_path = _get_project_product_image_path(project_id)
+        if img_path:
+            initial_state["product_image_path"] = img_path
     loop = asyncio.get_running_loop()
 
     def _emit(event: dict):
@@ -785,14 +834,104 @@ _HTML = r"""<!DOCTYPE html>
   </div>
 </div>
 
+<!-- Brand Kit Modal -->
+<div id="brand-kit-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+  <div class="card w-full max-w-md p-6 mx-4" style="max-height:90vh;overflow-y:auto">
+    <div class="flex items-center justify-between mb-4">
+      <h2 id="bk-modal-title" class="text-base font-semibold text-white">New Brand Kit</h2>
+      <button onclick="closeBrandKitModal()" class="text-gray-500 hover:text-gray-300 text-lg leading-none">✕</button>
+    </div>
+    <input type="hidden" id="bk-id"/>
+    <!-- Name -->
+    <div class="mb-4">
+      <label class="text-sm text-gray-400 mb-1 block">Brand Name</label>
+      <input id="bk-name" type="text" class="w-full text-sm p-2" placeholder="Nike"/>
+    </div>
+    <!-- Colors -->
+    <div class="mb-4">
+      <label class="text-sm text-gray-400 mb-2 block">Colors</label>
+      <div class="grid grid-cols-2 gap-2">
+        <div>
+          <label class="text-xs text-gray-500 block mb-1">Primary</label>
+          <div class="flex gap-1 items-center">
+            <input id="bk-color-primary" type="color" value="#00B894" class="w-8 h-8 rounded cursor-pointer border-0 p-0" style="background:none"/>
+            <input id="bk-color-primary-hex" type="text" value="#00B894" class="flex-1 text-xs p-1.5 font-mono" maxlength="7"/>
+          </div>
+        </div>
+        <div>
+          <label class="text-xs text-gray-500 block mb-1">Secondary</label>
+          <div class="flex gap-1 items-center">
+            <input id="bk-color-secondary" type="color" value="#FFFFFF" class="w-8 h-8 rounded cursor-pointer border-0 p-0" style="background:none"/>
+            <input id="bk-color-secondary-hex" type="text" value="#FFFFFF" class="flex-1 text-xs p-1.5 font-mono" maxlength="7"/>
+          </div>
+        </div>
+        <div>
+          <label class="text-xs text-gray-500 block mb-1">Accent</label>
+          <div class="flex gap-1 items-center">
+            <input id="bk-color-accent" type="color" value="#FF7675" class="w-8 h-8 rounded cursor-pointer border-0 p-0" style="background:none"/>
+            <input id="bk-color-accent-hex" type="text" value="#FF7675" class="flex-1 text-xs p-1.5 font-mono" maxlength="7"/>
+          </div>
+        </div>
+        <div>
+          <label class="text-xs text-gray-500 block mb-1">Background</label>
+          <div class="flex gap-1 items-center">
+            <input id="bk-color-background" type="color" value="#1A1A2E" class="w-8 h-8 rounded cursor-pointer border-0 p-0" style="background:none"/>
+            <input id="bk-color-background-hex" type="text" value="#1A1A2E" class="flex-1 text-xs p-1.5 font-mono" maxlength="7"/>
+          </div>
+        </div>
+      </div>
+    </div>
+    <!-- Logo position -->
+    <div class="mb-4">
+      <label class="text-sm text-gray-400 mb-1 block">Logo Position</label>
+      <select id="bk-safe-area" class="w-full text-sm p-2">
+        <option value="top_right">Top Right</option>
+        <option value="top_left">Top Left</option>
+        <option value="bottom_right">Bottom Right</option>
+        <option value="bottom_left">Bottom Left</option>
+      </select>
+    </div>
+    <!-- Logo -->
+    <div id="bk-logo-section" class="mb-4 hidden">
+      <label class="text-sm text-gray-400 mb-2 block">Logo</label>
+      <div id="bk-logo-preview" class="mb-2 hidden">
+        <img id="bk-logo-img" src="" alt="logo" class="h-12 rounded border border-gray-700 bg-gray-900 p-1"/>
+      </div>
+      <div class="flex gap-2 mb-2">
+        <input id="bk-logo-url" type="text" class="flex-1 text-xs p-2" placeholder="https://nike.com"/>
+        <button onclick="fetchLogoFromUrl()" class="btn-secondary text-xs px-3 py-1.5 rounded-md whitespace-nowrap">Fetch</button>
+      </div>
+      <div>
+        <input id="bk-logo-file" type="file" accept="image/*" class="text-xs text-gray-400" onchange="uploadLogoFile(this)"/>
+      </div>
+    </div>
+    <!-- Actions -->
+    <div class="flex gap-2 mt-2">
+      <button onclick="saveBrandKit()" class="btn-primary text-sm px-4 py-2 rounded-md flex-1">Save</button>
+      <button id="bk-delete-btn" onclick="deleteBrandKit()" class="btn-danger text-sm px-4 py-2 rounded-md hidden">Delete</button>
+      <button onclick="closeBrandKitModal()" class="btn-secondary text-sm px-4 py-2 rounded-md">Cancel</button>
+    </div>
+  </div>
+</div>
+
 <div class="flex flex-1 overflow-hidden">
 
 <!-- Sidebar -->
 <aside class="sidebar w-56 flex-shrink-0 flex flex-col overflow-hidden">
   <div class="p-2 border-b border-gray-800 text-xs text-gray-500 px-3 py-2 font-medium">Projects</div>
   <!-- Project list -->
-  <div id="project-list" class="flex-1 overflow-y-auto p-2 space-y-1">
+  <div id="project-list" class="flex-1 overflow-y-auto p-2 space-y-1" style="min-height:0">
     <p class="text-xs text-gray-500 text-center pt-4">Loading...</p>
+  </div>
+  <!-- Brand Kits section -->
+  <div class="border-t border-gray-800 flex-shrink-0">
+    <div class="flex items-center justify-between px-3 py-2">
+      <span class="text-xs text-gray-500 font-medium">Brand Kits</span>
+      <button onclick="openNewBrandKitModal()" class="text-xs text-blue-400 hover:text-blue-300 leading-none">+ New</button>
+    </div>
+    <div id="brand-kit-list" class="px-2 pb-2 space-y-1 max-h-36 overflow-y-auto">
+      <p class="text-xs text-gray-600 text-center py-1">Loading...</p>
+    </div>
   </div>
 </aside>
 
@@ -810,6 +949,16 @@ _HTML = r"""<!DOCTYPE html>
         <span id="proj-status-dot" class="text-xs font-mono px-2 py-0.5 rounded-full bg-gray-800"></span>
         <span id="proj-id" class="text-xs text-gray-500 font-mono"></span>
         <p id="proj-brief" class="text-xs text-gray-400 truncate flex-1"></p>
+        <!-- Product image indicator -->
+        <div id="proj-product-thumb" class="hidden flex items-center gap-1.5 flex-shrink-0">
+          <img id="proj-product-img" src="" alt="product" class="h-7 w-7 object-cover rounded border border-gray-600" title="Product image attached"/>
+          <button onclick="document.getElementById('product-file-input').click()"
+            class="text-xs text-gray-600 hover:text-gray-400" title="Replace product image">↺</button>
+        </div>
+        <button id="proj-attach-btn" onclick="document.getElementById('product-file-input').click()"
+          class="hidden text-xs text-gray-600 hover:text-gray-400 flex-shrink-0 flex items-center gap-1" title="Add product image">
+          📎 Add product image
+        </button>
       </div>
 
       <!-- Tab bar -->
@@ -873,9 +1022,32 @@ _HTML = r"""<!DOCTYPE html>
           <span class="chip" data-style="playful" onclick="toggleStyle(this)">playful</span>
           <span class="chip" data-style="premium" onclick="toggleStyle(this)">premium</span>
           <span class="chip" data-style="promo" onclick="toggleStyle(this)">promo</span>
+          <span class="text-gray-700 mx-1">|</span>
+          <span class="text-xs text-gray-600 mr-1">Brand:</span>
+          <select id="brand-select" class="text-xs px-2 py-0.5 rounded"
+            style="background:#0d1117;border:1px solid #30363d;color:#c9d1d9"
+            onchange="selectedBrandId = this.value">
+            <option value="tong_sui">Tong Sui</option>
+          </select>
+        </div>
+        <!-- Product image preview (shown when attached) -->
+        <div id="product-preview-bar" class="hidden flex items-center gap-2 mb-2 px-1">
+          <img id="product-preview-img" src="" alt="product" class="h-10 w-10 object-cover rounded border border-gray-600"/>
+          <div class="flex-1">
+            <p class="text-xs text-gray-400" id="product-preview-name"></p>
+            <p class="text-xs text-gray-600">Product image — will be used for ad outro</p>
+          </div>
+          <button onclick="clearProductImage()" class="text-gray-600 hover:text-gray-300 text-sm">✕</button>
         </div>
         <!-- Input row -->
         <div class="chat-input flex items-end gap-2 px-3 py-2">
+          <!-- Hidden file input -->
+          <input id="product-file-input" type="file" accept="image/*" class="hidden" onchange="handleProductImageSelect(this)"/>
+          <button id="attach-btn" onclick="document.getElementById('product-file-input').click()"
+            title="Attach product image"
+            class="text-gray-500 hover:text-gray-300 text-lg flex-shrink-0 self-end pb-1 transition-colors" style="line-height:1">
+            📎
+          </button>
           <textarea id="chat-input" rows="2"
             class="flex-1 text-sm bg-transparent border-none outline-none resize-none text-gray-200"
             placeholder="Describe your video..."
@@ -917,6 +1089,7 @@ let currentPlan = null;
 let selectedDuration = 5;
 let selectedStyles = ['fresh'];
 let selectedAspect = '9:16';
+let selectedBrandId = 'tong_sui';
 
 // ── Node metadata ──────────────────────────────────────────────────────────
 const NODE_META = {
@@ -1177,6 +1350,50 @@ async function selectProject(id) {
   }
 }
 
+// ── Product image (project-level) ──────────────────────────────────────────
+let pendingProductFile = null; // File object waiting to be uploaded after project creation
+
+function handleProductImageSelect(input) {
+  const file = input.files[0];
+  if (!file) return;
+  pendingProductFile = file;
+
+  // Show preview in chat bar
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    document.getElementById('product-preview-img').src = e.target.result;
+    document.getElementById('product-preview-name').textContent = file.name;
+    document.getElementById('product-preview-bar').classList.remove('hidden');
+    document.getElementById('attach-btn').classList.add('text-blue-400');
+  };
+  reader.readAsDataURL(file);
+
+  // If a project is already selected, upload immediately
+  if (currentProjectId) uploadProductImageForProject(currentProjectId, file);
+}
+
+function clearProductImage() {
+  pendingProductFile = null;
+  document.getElementById('product-file-input').value = '';
+  document.getElementById('product-preview-bar').classList.add('hidden');
+  document.getElementById('attach-btn').classList.remove('text-blue-400');
+}
+
+async function uploadProductImageForProject(projectId, file) {
+  try {
+    const fd = new FormData();
+    fd.append('file', file);
+    const res = await fetch(`/api/projects/${projectId}/product-image`, { method: 'POST', body: fd });
+    if (!res.ok) throw new Error((await res.json()).detail || 'Upload failed');
+    // Refresh strip to show thumbnail
+    const proj = await api('GET', `/api/projects/${projectId}`);
+    updateProjStrip(proj);
+    toast('Product image uploaded', 'success');
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
 function updateProjStrip(proj) {
   const strip = document.getElementById('proj-info-strip');
   strip.classList.remove('hidden');
@@ -1187,6 +1404,18 @@ function updateProjStrip(proj) {
   dot.className = `text-xs font-mono px-2 py-0.5 rounded-full bg-gray-800 ${statusColors[proj.status] || ''}`;
   document.getElementById('proj-id').textContent = proj.project_id.slice(0, 8);
   document.getElementById('proj-brief').textContent = proj.brief;
+
+  // Show/hide product image thumbnail in strip
+  const thumb = document.getElementById('proj-product-thumb');
+  const attachBtn = document.getElementById('proj-attach-btn');
+  if (proj.has_product_image) {
+    document.getElementById('proj-product-img').src = `/api/projects/${proj.project_id}/product-image?t=${Date.now()}`;
+    thumb.classList.remove('hidden');
+    attachBtn.classList.add('hidden');
+  } else {
+    thumb.classList.add('hidden');
+    attachBtn.classList.remove('hidden');
+  }
 }
 
 // ── Chat send handler ──────────────────────────────────────────────────────
@@ -1224,10 +1453,16 @@ async function createAndPlan(brief) {
       assets_available: 'none',
     };
 
-    const res = await api('POST', '/api/projects', { brief, brand_id: 'tong_sui', user_id: 'ej' });
+    const res = await api('POST', '/api/projects', { brief, brand_id: selectedBrandId, user_id: 'ej' });
     currentProjectId = res.project_id;
     _run_events_cache[currentProjectId] = [];
     await loadProjects();
+
+    // Upload pending product image (attached before project was created)
+    if (pendingProductFile) {
+      await uploadProductImageForProject(currentProjectId, pendingProductFile);
+      clearProductImage();
+    }
 
     await api('POST', `/api/projects/${currentProjectId}/plan`, { clarification_answers: answers });
     connectEventStream(currentProjectId, 'plan');
@@ -1368,6 +1603,7 @@ function newVideo() {
   currentProjectId = null;
   currentPlan = null;
   clearAgentLog();
+  clearProductImage();
   setAppState('idle');
   document.getElementById('proj-info-strip').classList.add('hidden');
   document.getElementById('video-empty').classList.remove('hidden');
@@ -1986,9 +2222,202 @@ async function updateApiStatus() {
   } catch (e) {}
 }
 
+// ── Brand Kit UI ───────────────────────────────────────────────────────────
+let _brandKits = [];
+
+async function loadBrandKits() {
+  try {
+    _brandKits = await api('GET', '/api/brand-kits');
+    renderBrandKitList(_brandKits);
+    updateBrandSelect(_brandKits);
+  } catch (e) {
+    document.getElementById('brand-kit-list').innerHTML =
+      `<p class="text-xs text-red-400 text-center py-1">${e.message}</p>`;
+  }
+}
+
+function renderBrandKitList(kits) {
+  const el = document.getElementById('brand-kit-list');
+  if (!kits.length) {
+    el.innerHTML = '<p class="text-xs text-gray-600 text-center py-1">No brand kits</p>';
+    return;
+  }
+  el.innerHTML = kits.map(k => {
+    const primary = k.colors?.primary || '#888';
+    const hasLogo = k.logo?.path;
+    const logoHtml = hasLogo
+      ? `<img src="/api/brand-kits/${k.brand_id}/logo" class="w-5 h-5 rounded object-contain bg-gray-900 border border-gray-700" onerror="this.style.display='none'"/>`
+      : `<span class="w-5 h-5 rounded flex items-center justify-center bg-gray-800 text-gray-600 text-xs">?</span>`;
+    return `
+      <div class="card card-hover p-1.5 flex items-center gap-1.5">
+        ${logoHtml}
+        <span class="flex-1 text-xs text-gray-300 truncate">${escHtml(k.name || k.brand_id)}</span>
+        <span class="w-3 h-3 rounded-full flex-shrink-0" style="background:${primary}" title="${primary}"></span>
+        <button onclick="openEditBrandKitModal('${k.brand_id}')"
+          class="text-xs text-gray-500 hover:text-blue-400 px-1 flex-shrink-0">Edit</button>
+      </div>`;
+  }).join('');
+}
+
+function updateBrandSelect(kits) {
+  const sel = document.getElementById('brand-select');
+  const cur = sel.value;
+  sel.innerHTML = kits.map(k =>
+    `<option value="${k.brand_id}">${escHtml(k.name || k.brand_id)}</option>`
+  ).join('');
+  if (kits.find(k => k.brand_id === cur)) sel.value = cur;
+  selectedBrandId = sel.value;
+}
+
+function openNewBrandKitModal() {
+  document.getElementById('bk-modal-title').textContent = 'New Brand Kit';
+  document.getElementById('bk-id').value = '';
+  document.getElementById('bk-name').value = '';
+  document.getElementById('bk-color-primary').value = '#00B894';
+  document.getElementById('bk-color-primary-hex').value = '#00B894';
+  document.getElementById('bk-color-secondary').value = '#FFFFFF';
+  document.getElementById('bk-color-secondary-hex').value = '#FFFFFF';
+  document.getElementById('bk-color-accent').value = '#FF7675';
+  document.getElementById('bk-color-accent-hex').value = '#FF7675';
+  document.getElementById('bk-color-background').value = '#1A1A2E';
+  document.getElementById('bk-color-background-hex').value = '#1A1A2E';
+  document.getElementById('bk-safe-area').value = 'top_right';
+  document.getElementById('bk-logo-section').classList.add('hidden');
+  document.getElementById('bk-logo-preview').classList.add('hidden');
+  document.getElementById('bk-logo-url').value = '';
+  document.getElementById('bk-delete-btn').classList.add('hidden');
+  document.getElementById('brand-kit-modal').classList.remove('hidden');
+}
+
+function openEditBrandKitModal(brandId) {
+  const kit = _brandKits.find(k => k.brand_id === brandId);
+  if (!kit) return;
+  document.getElementById('bk-modal-title').textContent = 'Edit Brand Kit';
+  document.getElementById('bk-id').value = kit.brand_id;
+  document.getElementById('bk-name').value = kit.name || '';
+  const c = kit.colors || {};
+  ['primary', 'secondary', 'accent', 'background'].forEach(k => {
+    const val = c[k] || '#888888';
+    document.getElementById(`bk-color-${k}`).value = val;
+    document.getElementById(`bk-color-${k}-hex`).value = val;
+  });
+  document.getElementById('bk-safe-area').value = kit.logo?.safe_area || 'top_right';
+  document.getElementById('bk-logo-section').classList.remove('hidden');
+  document.getElementById('bk-logo-url').value = '';
+  // Show logo preview if exists
+  const preview = document.getElementById('bk-logo-preview');
+  const img = document.getElementById('bk-logo-img');
+  if (kit.logo?.path) {
+    img.src = `/api/brand-kits/${kit.brand_id}/logo?t=${Date.now()}`;
+    preview.classList.remove('hidden');
+  } else {
+    preview.classList.add('hidden');
+  }
+  document.getElementById('bk-delete-btn').classList.remove('hidden');
+  document.getElementById('brand-kit-modal').classList.remove('hidden');
+}
+
+function closeBrandKitModal() {
+  document.getElementById('brand-kit-modal').classList.add('hidden');
+}
+
+function _getBkColors() {
+  return {
+    primary: document.getElementById('bk-color-primary-hex').value || document.getElementById('bk-color-primary').value,
+    secondary: document.getElementById('bk-color-secondary-hex').value || document.getElementById('bk-color-secondary').value,
+    accent: document.getElementById('bk-color-accent-hex').value || document.getElementById('bk-color-accent').value,
+    background: document.getElementById('bk-color-background-hex').value || document.getElementById('bk-color-background').value,
+  };
+}
+
+async function saveBrandKit() {
+  const brandId = document.getElementById('bk-id').value;
+  const name = document.getElementById('bk-name').value.trim();
+  const safe_area = document.getElementById('bk-safe-area').value;
+  const colors = _getBkColors();
+  if (!name) { toast('Brand name is required', 'error'); return; }
+  try {
+    if (brandId) {
+      await api('PUT', `/api/brand-kits/${brandId}`, { name, colors, safe_area });
+      toast('Brand kit saved', 'success');
+    } else {
+      await api('POST', '/api/brand-kits', { name, colors, safe_area });
+      toast('Brand kit created', 'success');
+    }
+    closeBrandKitModal();
+    loadBrandKits();
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
+async function deleteBrandKit() {
+  const brandId = document.getElementById('bk-id').value;
+  if (!brandId) return;
+  if (!confirm('Delete this brand kit?')) return;
+  try {
+    await api('DELETE', `/api/brand-kits/${brandId}`);
+    toast('Brand kit deleted', 'success');
+    closeBrandKitModal();
+    loadBrandKits();
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
+async function fetchLogoFromUrl() {
+  const brandId = document.getElementById('bk-id').value;
+  const url = document.getElementById('bk-logo-url').value.trim();
+  if (!brandId) { toast('Save the brand kit first before fetching a logo', 'error'); return; }
+  if (!url) { toast('Enter a website URL', 'error'); return; }
+  try {
+    await api('POST', '/api/brand-kits/fetch-logo', { url, brand_id: brandId });
+    toast('Logo fetched!', 'success');
+    const img = document.getElementById('bk-logo-img');
+    img.src = `/api/brand-kits/${brandId}/logo?t=${Date.now()}`;
+    document.getElementById('bk-logo-preview').classList.remove('hidden');
+    loadBrandKits();
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
+async function uploadLogoFile(input) {
+  const brandId = document.getElementById('bk-id').value;
+  if (!brandId) { toast('Save the brand kit first before uploading a logo', 'error'); return; }
+  const file = input.files[0];
+  if (!file) return;
+  const formData = new FormData();
+  formData.append('file', file);
+  try {
+    const res = await fetch(`/api/brand-kits/${brandId}/logo`, { method: 'POST', body: formData });
+    if (!res.ok) { const e = await res.json(); throw new Error(e.detail); }
+    toast('Logo uploaded!', 'success');
+    const img = document.getElementById('bk-logo-img');
+    img.src = `/api/brand-kits/${brandId}/logo?t=${Date.now()}`;
+    document.getElementById('bk-logo-preview').classList.remove('hidden');
+    loadBrandKits();
+  } catch (e) {
+    toast(e.message || 'Upload failed', 'error');
+  }
+}
+
+// Sync color pickers ↔ hex inputs
+['primary', 'secondary', 'accent', 'background'].forEach(k => {
+  const picker = document.getElementById(`bk-color-${k}`);
+  const hex = document.getElementById(`bk-color-${k}-hex`);
+  if (picker && hex) {
+    picker.addEventListener('input', () => { hex.value = picker.value; });
+    hex.addEventListener('input', () => {
+      if (/^#[0-9a-fA-F]{6}$/.test(hex.value)) picker.value = hex.value;
+    });
+  }
+});
+
 // ── Init ───────────────────────────────────────────────────────────────────
 setAppState('idle');
 loadProjects();
+loadBrandKits();
 updateApiStatus();
 document.getElementById('chat-input').focus();
 // Refresh project list every 10s
