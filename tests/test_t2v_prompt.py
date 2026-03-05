@@ -88,8 +88,9 @@ class TestPlannerSystemPromptRules:
         # desc should never mention on-screen text
         assert "NEVER mention text" in PLANNER_SYSTEM or "never" in PLANNER_SYSTEM.lower()
 
-    def test_requires_last_shot_type_text(self):
-        assert 'type must always be "text"' in PLANNER_SYSTEM or "last shot" in PLANNER_SYSTEM.lower()
+    def test_outro_is_optional(self):
+        # Outro is no longer forced — only added when user wants it
+        assert "optional" in PLANNER_SYSTEM.lower()
 
     def test_prohibits_logo_in_desc(self):
         assert "logo" in PLANNER_SYSTEM.lower()
