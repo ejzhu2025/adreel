@@ -26,25 +26,18 @@ def layout_branding(state: dict[str, Any]) -> dict[str, Any]:
     raw_path = str(work_dir / "raw_concat.mp4")
     fc.concat_clips(clip_paths, raw_path)
 
-    # 2. Write SRT subtitle file
-    subtitle_style = brand_kit.get("subtitle_style", {})
+    # 2. Write SRT for reference only — subtitles are NOT burned into the video.
+    #    Text overlays in the shot list are handled by FrameGenerator on the outro frame.
     srt_path = str(work_dir / "captions.srt")
     cr.write_srt(caption_segments, srt_path)
 
-    # 3. Burn subtitles onto video
-    with_subs_path = str(work_dir / "with_subs.mp4")
-    fc.burn_subtitles(
-        input_path=raw_path,
-        srt_path=srt_path,
-        output_path=with_subs_path,
-        subtitle_style=subtitle_style,
-    )
-
-    # 4. Logo is embedded directly into the outro PIL frame (plan A).
-    #    No full-video watermark overlay — copy with_subs as branded.
+    # 3. No subtitle burn, no full-video watermark — copy raw concat directly.
     branded_path = str(work_dir / "branded.mp4")
     import shutil
-    shutil.copy(with_subs_path, branded_path)
+    shutil.copy(raw_path, branded_path)
+
+    # Keep with_subs.mp4 as an alias so existing file references don't break.
+    shutil.copy(raw_path, str(work_dir / "with_subs.mp4"))
 
     messages = state.get("messages", [])
     messages.append(

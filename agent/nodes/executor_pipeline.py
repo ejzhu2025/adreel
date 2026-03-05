@@ -116,8 +116,28 @@ def executor_pipeline(state: dict[str, Any]) -> dict[str, Any]:
 
                 scene = storyboard[i] if i < len(storyboard) else {}
                 desc = scene.get("desc") or "cinematic product shot"
+                shot_type = shot.get("type", "wide")
+                product_image_path = state.get("product_image_path", "")
+
+                # Use I2V for product/lifestyle shots when a product image is available.
+                # This eliminates AI-invented text/logos on the product — the real photo is used.
+                if shot_type in ("product", "lifestyle", "close", "macro") \
+                        and product_image_path and Path(product_image_path).exists():
+                    try:
+                        from render.fal_i2v import generate_clip_from_image, build_shot_motion_prompt
+                        motion_prompt = build_shot_motion_prompt(
+                            shot_type, desc, brief=state.get("brief", "")
+                        )
+                        raw_path = str(work_dir / f"{shot_id}_raw.mp4")
+                        generate_clip_from_image(product_image_path, motion_prompt, raw_path, quality=quality)
+                        fc.trim_and_scale_clip(raw_path, clip_path, duration=duration)
+                        return {"shot_id": shot_id, "clip_path": clip_path, "duration": duration}
+                    except Exception as e:
+                        import sys
+                        print(f"[executor] I2V shot failed: {e} — falling back to T2V", file=sys.stderr)
+
+                # Default: T2V for non-product shots or when no product image is available
                 tone_str = ", ".join(style_tone) if isinstance(style_tone, list) else str(style_tone)
-                # Strip "branded" from desc to prevent T2V from rendering text on products
                 clean_desc = desc.replace("branded ", "").replace("brand ", "")
                 prompt = (
                     f"{clean_desc}. Style: {tone_str}. "

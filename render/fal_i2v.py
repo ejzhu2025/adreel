@@ -51,6 +51,32 @@ def generate_clip_from_image(
     return output_path
 
 
+def build_shot_motion_prompt(shot_type: str, scene_desc: str, brief: str = "") -> str:
+    """Motion-focused I2V prompt for product/lifestyle shots.
+
+    Describes only camera movement and atmosphere — never the product itself —
+    so the I2V model animates the uploaded photo without inventing text or logos.
+    """
+    brief_lower = brief.lower()
+    if any(w in brief_lower for w in ["summer", "fresh", "cool", "watermelon"]):
+        light = "soft natural daylight, cool refreshing atmosphere"
+    elif any(w in brief_lower for w in ["luxury", "premium", "gold"]):
+        light = "dramatic rim lighting, luxury cinematic atmosphere"
+    else:
+        light = "soft studio lighting, cinematic bokeh"
+
+    if shot_type == "lifestyle":
+        return (
+            f"Gentle handheld camera movement, slow tilt upward, {light}, "
+            "smooth slow motion, no text, no logos, no watermarks"
+        )
+    # product, macro, close, wide
+    return (
+        f"Slow cinematic product reveal, gentle rotation, {light}, "
+        "product sharp and centered, smooth slow motion, no text, no logos, no watermarks"
+    )
+
+
 def build_outro_motion_prompt(brand_kit: dict, brief: str = "") -> str:
     """Motion-focused prompt for I2V outro — describes camera/motion only, not the subject."""
     brief_lower = brief.lower()
