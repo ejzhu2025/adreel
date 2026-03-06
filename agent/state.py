@@ -63,6 +63,7 @@ class AgentState(TypedDict, total=False):
     needs_replan: bool
     error: Optional[str]
     messages: list[dict]                # conversation log
+    relevance_rerender_attempt: int     # counts how many times relevance re-render has run
 
 
 # ── Short-term memory (in-process) ────────────────────────────────────────────

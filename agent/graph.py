@@ -20,6 +20,7 @@ from agent.nodes.layout_branding import layout_branding
 from agent.nodes.music_mixer import music_mixer
 from agent.nodes.quality_gate import quality_gate
 from agent.nodes.qc_diagnose import qc_diagnose
+from agent.nodes.relevance_rerender import relevance_rerender, MAX_RELEVANCE_RETRIES
 from agent.nodes.render_export import render_export
 from agent.nodes.result_summarizer import result_summarizer
 from agent.nodes.memory_writer import memory_writer
@@ -41,6 +42,14 @@ def _route_plan_checker(state: dict[str, Any]) -> str:
 def _route_quality_gate(state: dict[str, Any]) -> str:
     qr = state.get("quality_result", {})
     if not qr.get("passed"):
+        low_relevance = qr.get("low_relevance_shots", [])
+        rerender_attempt = state.get("relevance_rerender_attempt", 0)
+        if low_relevance and rerender_attempt < MAX_RELEVANCE_RETRIES:
+            # Only route to relevance_rerender when ALL issues are relevance-only
+            issues = qr.get("issues", [])
+            non_relevance = [i for i in issues if "low relevance score" not in i]
+            if not non_relevance:
+                return "relevance_rerender"
         return "qc_diagnose"
     return "render_export"
 
@@ -74,6 +83,7 @@ def build_graph() -> Any:
     workflow.add_node("music_mixer", music_mixer)
     workflow.add_node("quality_gate", quality_gate)
     workflow.add_node("qc_diagnose", qc_diagnose)
+    workflow.add_node("relevance_rerender", relevance_rerender)
     workflow.add_node("render_export", render_export)
     workflow.add_node("result_summarizer", result_summarizer)
     workflow.add_node("memory_writer", memory_writer)
@@ -110,8 +120,10 @@ def build_graph() -> Any:
     workflow.add_conditional_edges(
         "quality_gate",
         _route_quality_gate,
-        {"qc_diagnose": "qc_diagnose", "render_export": "render_export"},
+        {"qc_diagnose": "qc_diagnose", "render_export": "render_export",
+         "relevance_rerender": "relevance_rerender"},
     )
+    workflow.add_edge("relevance_rerender", "layout_branding")
     workflow.add_conditional_edges(
         "qc_diagnose",
         _route_qc_diagnose,
@@ -173,6 +185,7 @@ def build_execute_only_graph() -> Any:
     workflow.add_node("music_mixer", music_mixer)
     workflow.add_node("quality_gate", quality_gate)
     workflow.add_node("qc_diagnose", qc_diagnose)
+    workflow.add_node("relevance_rerender", relevance_rerender)
     workflow.add_node("render_export", render_export)
     workflow.add_node("result_summarizer", result_summarizer)
     workflow.add_node("memory_writer", memory_writer)
@@ -190,8 +203,10 @@ def build_execute_only_graph() -> Any:
     workflow.add_conditional_edges(
         "quality_gate",
         _route_quality_gate,
-        {"qc_diagnose": "qc_diagnose", "render_export": "render_export"},
+        {"qc_diagnose": "qc_diagnose", "render_export": "render_export",
+         "relevance_rerender": "relevance_rerender"},
     )
+    workflow.add_edge("relevance_rerender", "layout_branding")
     workflow.add_conditional_edges(
         "qc_diagnose",
         _route_qc_diagnose,
@@ -223,6 +238,7 @@ def build_partial_rerender_graph() -> Any:
     workflow.add_node("music_mixer", music_mixer)
     workflow.add_node("quality_gate", quality_gate)
     workflow.add_node("qc_diagnose", qc_diagnose)
+    workflow.add_node("relevance_rerender", relevance_rerender)
     workflow.add_node("render_export", render_export)
     workflow.add_node("result_summarizer", result_summarizer)
     workflow.add_node("memory_writer", memory_writer)
@@ -255,8 +271,10 @@ def build_partial_rerender_graph() -> Any:
     workflow.add_conditional_edges(
         "quality_gate",
         _route_quality_gate,
-        {"qc_diagnose": "qc_diagnose", "render_export": "render_export"},
+        {"qc_diagnose": "qc_diagnose", "render_export": "render_export",
+         "relevance_rerender": "relevance_rerender"},
     )
+    workflow.add_edge("relevance_rerender", "layout_branding")
     workflow.add_conditional_edges(
         "qc_diagnose",
         _route_qc_diagnose,
@@ -283,6 +301,7 @@ def build_replan_graph() -> Any:
     workflow.add_node("music_mixer", music_mixer)
     workflow.add_node("quality_gate", quality_gate)
     workflow.add_node("qc_diagnose", qc_diagnose)
+    workflow.add_node("relevance_rerender", relevance_rerender)
     workflow.add_node("render_export", render_export)
     workflow.add_node("result_summarizer", result_summarizer)
     workflow.add_node("memory_writer", memory_writer)
@@ -302,8 +321,10 @@ def build_replan_graph() -> Any:
     workflow.add_conditional_edges(
         "quality_gate",
         _route_quality_gate,
-        {"qc_diagnose": "qc_diagnose", "render_export": "render_export"},
+        {"qc_diagnose": "qc_diagnose", "render_export": "render_export",
+         "relevance_rerender": "relevance_rerender"},
     )
+    workflow.add_edge("relevance_rerender", "layout_branding")
     workflow.add_conditional_edges(
         "qc_diagnose",
         _route_qc_diagnose,
