@@ -42,9 +42,25 @@ def relevance_rerender(state: dict[str, Any]) -> dict[str, Any]:
     shot_list = plan.get("shot_list", [])
     storyboard = plan.get("storyboard", [])
     scene_by_shot: dict[str, dict] = {
-        shot["shot_id"]: {"shot": shot, "scene": storyboard[i] if i < len(storyboard) else {}}
+        shot["shot_id"]: {"shot": shot, "scene": storyboard[i] if i < len(storyboard) else {}, "index": i}
         for i, shot in enumerate(shot_list)
     }
+
+    product_image_path = state.get("product_image_path", "")
+    outro_shot_id = shot_list[-1]["shot_id"] if shot_list else None
+
+    # Never T2V-rerender the outro when a product image is uploaded —
+    # the FLUX Kontext + I2V result already shows the real product.
+    # Re-rendering with T2V would replace it with a generic AI scene.
+    skipped_outro: list[str] = []
+    if outro_shot_id and product_image_path and Path(product_image_path).exists():
+        if outro_shot_id in low_relevance_shots:
+            skipped_outro.append(outro_shot_id)
+            low_relevance_shots = [s for s in low_relevance_shots if s != outro_shot_id]
+            console.print(
+                f"[dim][relevance_rerender] Skipping outro {outro_shot_id} — "
+                "product image outro is exempt from T2V re-render[/dim]"
+            )
 
     rerendered: list[str] = []
     fal_key = os.getenv("FAL_KEY") or os.getenv("FAL_API_KEY")
