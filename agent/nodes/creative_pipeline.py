@@ -56,6 +56,21 @@ Rules:
 - scene_count guides the storyboard (not a hard limit)
 - visual_signature defines the unbreakable visual language for the entire film — all shots must conform
 - camera_style must be ONE style only (no mixing); color_palette must appear in every non-text shot
+
+CRITICAL — T2V generability constraint:
+All concepts MUST describe scenes that exist in the real physical world and can be captured by a camera.
+FORBIDDEN visual_style and camera_style patterns (these are post-production VFX, not T2V-generatable):
+- split-screen / divided frame / left-half right-half with different lighting
+- color gel lighting that divides the frame into separate zones
+- graphic overlays / halftone dots / pop-art graphic elements
+- collision dissolve / two colors crashing together / color flood / color explosion
+- wipe transitions / screen wipes / split-line animations
+- digital zoom / digital push (in-camera only, no post-zoom)
+- After Effects / motion graphics / animated text / kinetic typography
+- any effect that requires compositing two separate video layers
+
+ALLOWED styles: macro, lifestyle, wide, close-up, product shot, slow-motion, time-lapse,
+overhead flat-lay, handheld, steadicam, dolly, crane — anything a real camera can capture in one take.
 """
 
 DIRECTOR_USER_TEMPLATE = """\
@@ -343,12 +358,38 @@ You are a quality-control critic for short-form video storyboards.
 Review the given storyboard JSON and output corrections as RFC 6902 JSON Patch.
 
 Check for these issues:
-1. desc fields containing forbidden words: "branded", "branding", "logo shown", "text appears",
-   "caption", "title card", "watermark", "overlay", "tagline", "slogan", "CTA"
+
+1. desc fields containing forbidden branding/overlay words: "branded", "branding", "logo shown",
+   "text appears", "caption", "title card", "watermark", "overlay", "tagline", "slogan", "CTA"
+
 2. "text" type shots whose desc is not an abstract visual (must be only colors/mood/bokeh)
+
 3. shot_list and storyboard length mismatch (must be 1-to-1)
+
 4. Shot durations outside [0.5, 2.0] range (clamp to nearest bound)
+
 5. Missing text_overlay for the last shot when it is type "text"
+
+6. T2V GENERABILITY — desc describes post-production VFX that a video model cannot render.
+   Trigger phrases (any of these → must patch):
+     split-screen, split screen, divided frame, left half / right half (with different lighting)
+     color gel, gel-lit, gel light, color zone, colored lighting on one side
+     halftone, pop-art graphic, graphic element, graphic overlay
+     collision dissolve, colors crash together, color flood, color explosion, color burst
+     split line, dividing line, line pulses, line wobbles, line cracks
+     wipe transition, screen wipe, vertical wipe, horizontal wipe
+     digital zoom, digital push-in (post-production zoom is forbidden; camera dolly is allowed)
+     After Effects, motion graphics, animated, kinetic, compositing
+
+   When patching a generability violation, rewrite the desc to describe the SAME EMOTIONAL BEAT
+   using only real-world cinematography: macro textures, product close-up, lifestyle action,
+   lighting effects (practicals, window light, studio softbox), camera movement (dolly, push-in).
+   Keep duration, narrative_beat, and asset_hint unchanged — only replace desc.
+
+   Example fix:
+   BAD:  "vertical split-screen: left half red gel light with watermelon, right half white with coconut"
+   GOOD: "Overhead macro shot, halved watermelon and cracked coconut placed side by side on clean
+          white surface. Bright flat studio softbox lighting. Both subjects fill the frame symmetrically."
 
 Output ONLY a JSON array of RFC 6902 patch operations (no markdown fences):
 [
@@ -368,27 +409,104 @@ Review this storyboard and output JSON Patch corrections:
 """
 
 
+# ── Generability detector (Python-level, no LLM needed) ──────────────────────
+
+# Patterns that indicate post-production VFX — T2V models cannot render these
+_VFX_PATTERNS = re.compile(
+    r"split[\s-]screen|split\s+line|divid(?:ed|ing)\s+frame"
+    r"|left\s+half|right\s+half"
+    r"|color\s+gel|gel[\s-]lit|gel\s+light|colou?red?\s+lighting\s+on\s+one\s+side"
+    r"|halftone|pop[\s-]art\s+graphic|graphic\s+element|graphic\s+overlay"
+    r"|collision\s+dissolve|colou?rs?\s+crash|color\s+flood|colou?r\s+explosion|colou?r\s+burst"
+    r"|split\s+line\s+(?:pulses?|wobbles?|cracks?)|dividing\s+line"
+    r"|wipe\s+transition|screen\s+wipe|vertical\s+wipe|horizontal\s+wipe"
+    r"|digital\s+zoom|digital\s+push"
+    r"|after\s+effects|motion\s+graphics|kinetic\s+typograph",
+    re.IGNORECASE,
+)
+
+_REWRITE_SYSTEM = """\
+You are rewriting a single storyboard scene description to be T2V-generatable.
+The original desc contains post-production VFX effects that a video generation model cannot render.
+
+Rules:
+- Keep the same EMOTIONAL BEAT and narrative function (hook/build/climax/payoff)
+- Keep the same subject matter (product, food, lifestyle)
+- Replace VFX with real-world cinematography: macro close-up, product shot, overhead flat-lay,
+  lifestyle action, dolly/push-in camera move, studio softbox or natural light
+- Keep desc concise (2-4 sentences)
+- Do NOT mention split-screen, gel light, color zones, collision, dissolve, wipe, or any VFX
+- Output ONLY the rewritten desc string — no JSON, no explanation
+"""
+
+
+def _rewrite_desc(desc: str, beat: str, shot_type: str, llm_call: LLMCall) -> str:
+    """Ask LLM to rewrite a single non-generatable desc into a T2V-safe one."""
+    user_msg = (
+        f"narrative_beat: {beat}\n"
+        f"shot_type: {shot_type}\n"
+        f"original desc (contains VFX — rewrite it):\n{desc}"
+    )
+    try:
+        result = llm_call(_REWRITE_SYSTEM, user_msg).strip().strip('"')
+        return result
+    except Exception:
+        return desc  # fallback: keep original if rewrite fails
+
+
 def run_critic(plan: dict[str, Any], llm_call: LLMCall) -> dict[str, Any]:
-    """Step 3: review storyboard and apply JSON Patch corrections."""
+    """Step 3: review storyboard and apply JSON Patch corrections.
+
+    Two-pass approach:
+    - Pass A (Python): deterministically detect T2V generability violations, rewrite via LLM
+    - Pass B (LLM):    check remaining issues (forbidden words, duration, type mismatch, etc.)
+    """
+    import copy as _copy
+    plan = _copy.deepcopy(plan)
+
+    # ── Pass A: generability check ────────────────────────────────────────────
+    storyboard = plan.get("storyboard", [])
+    shot_list = plan.get("shot_list", [])
+    violations: list[int] = []
+    for i, scene in enumerate(storyboard):
+        if _VFX_PATTERNS.search(scene.get("desc", "")):
+            violations.append(i)
+
+    if violations:
+        console.print(f"[yellow][critic][/yellow] {len(violations)} generability violation(s) detected — rewriting…")
+        for i in violations:
+            scene = storyboard[i]
+            shot_type = shot_list[i].get("type", "lifestyle") if i < len(shot_list) else "lifestyle"
+            new_desc = _rewrite_desc(
+                scene["desc"],
+                scene.get("narrative_beat", ""),
+                shot_type,
+                llm_call,
+            )
+            storyboard[i]["desc"] = new_desc
+            console.print(f"  [green]S{scene['scene']}[/green] rewritten")
+    else:
+        console.print("[dim][critic] No generability violations[/dim]")
+
+    # ── Pass B: LLM quality check ─────────────────────────────────────────────
     user_msg = CRITIC_USER_TEMPLATE.format(
         storyboard_json=json.dumps(plan, ensure_ascii=False, indent=2)
     )
-
     try:
-        with console.status("[cyan][critic] Reviewing storyboard…[/cyan]"):
+        with console.status("[cyan][critic] QC check…[/cyan]"):
             raw = llm_call(CRITIC_SYSTEM, user_msg)
         patch_ops = _parse_json(raw)
         if not isinstance(patch_ops, list):
             patch_ops = []
         if patch_ops:
-            console.print(f"[green][critic][/green] Applying {len(patch_ops)} fix(es)")
+            console.print(f"[green][critic][/green] Applying {len(patch_ops)} QC fix(es)")
             plan = _apply_patch(plan, patch_ops)
         else:
-            console.print("[green][critic][/green] No issues found")
-        return plan
+            console.print("[green][critic][/green] QC passed")
     except Exception as e:
-        console.print(f"[yellow][critic] Error: {e} — skipping corrections[/yellow]")
-        return plan
+        console.print(f"[yellow][critic] QC error: {e} — skipping[/yellow]")
+
+    return plan
 
 
 def _apply_patch(obj: Any, patch: list[dict]) -> Any:
