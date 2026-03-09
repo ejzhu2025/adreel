@@ -77,9 +77,8 @@ DIRECTOR_USER_TEMPLATE = """\
 Brief: {brief}
 Brand: {brand_name}, primary color: {primary_color}, CTA: "{outro_cta}"
 Platform: {platform}, Duration: {duration_sec}s, Language: {language}
-Tone preference: {style_tone}
 
-Generate 3 creative concepts and select the best one.
+Generate 3 creative concepts and select the best one. Infer the appropriate tone and mood from the brief.
 """
 
 
@@ -96,12 +95,17 @@ def run_director(state: dict[str, Any], llm_call: LLMCall) -> dict[str, Any]:
         platform=answers.get("platform", "tiktok"),
         duration_sec=int(answers.get("duration_sec", 20)),
         language=answers.get("language", "en"),
-        style_tone=answers.get("style_tone", ["fresh"]),
+    )
+
+    # Append auto-fix addendum if present (from system_config planner_prompt_addendum)
+    addendum = state.get("_planner_addendum", "")
+    effective_director_system = DIRECTOR_SYSTEM + (
+        f"\n\nADDITIONAL RULES (from user feedback analysis):\n{addendum}" if addendum else ""
     )
 
     try:
         with console.status("[cyan][director] Generating creative concepts…[/cyan]"):
-            raw = llm_call(DIRECTOR_SYSTEM, user_msg)
+            raw = llm_call(effective_director_system, user_msg)
         data = _parse_json(raw)
         concepts = data.get("concepts", [])
         best_idx = int(data.get("best_index", 0))
@@ -214,7 +218,6 @@ STORYBOARD_USER_TEMPLATE = """\
 Brief: {brief}
 Brand: {brand_name}, primary color: {primary_color}, CTA: "{outro_cta}"
 Platform: {platform}, Duration: {duration_sec}s, Language: {language}
-Tone: {style_tone}
 
 Creative Concept:
 - Hook angle: {hook_angle}
@@ -247,9 +250,6 @@ def run_storyboard(
     answers = state.get("clarification_answers", {})
     feedback = state.get("plan_feedback", "")
     similar = state.get("similar_projects", [])
-    style_tone = answers.get("style_tone", ["fresh"])
-    if isinstance(style_tone, str):
-        style_tone = [style_tone]
 
     existing_plan = state.get("plan")
     if feedback and existing_plan:
@@ -269,7 +269,6 @@ def run_storyboard(
         platform=answers.get("platform", "tiktok"),
         duration_sec=int(answers.get("duration_sec", 20)),
         language=answers.get("language", "en"),
-        style_tone=", ".join(style_tone),
         hook_angle=concept.get("hook_angle", "sensory immersion"),
         visual_style=concept.get("visual_style", "cinematic"),
         key_message=concept.get("key_message", ""),
@@ -345,7 +344,7 @@ def run_storyboard(
             answers_copy.get("platform", "tiktok"),
             int(answers_copy.get("duration_sec", 20)),
             answers_copy.get("language", "en"),
-            style_tone,
+            answers_copy.get("style_tone", ["fresh"]),
         )
 
 
@@ -644,7 +643,6 @@ Output ONLY valid JSON (no markdown fences):
 COMPILER_USER_TEMPLATE = """\
 Style/mood: {mood}, {visual_style}
 Style keywords for this brand: {style_keywords}
-Tone: {style_tone}
 
 Visual Signature — embed ALL of these in EVERY non-text shot:
   camera_style : {vs_camera_style}
@@ -830,11 +828,6 @@ def run_compiler(
     llm_call: LLMCall,
 ) -> dict[str, Any]:
     """Step 4: compile T2V/I2V prompts. Returns {shot_id: {positive, negative}}."""
-    answers = state.get("clarification_answers", {})
-    style_tone = answers.get("style_tone", ["fresh"])
-    if isinstance(style_tone, str):
-        style_tone = [style_tone]
-
     vs = concept.get("visual_signature", {})
     shots = _build_cross_shot_sequence(plan)
 
@@ -846,7 +839,6 @@ def run_compiler(
         mood=concept.get("mood", "fresh"),
         visual_style=concept.get("visual_style", "cinematic"),
         style_keywords=_mood_to_style_keywords(concept.get("mood", "fresh")),
-        style_tone=", ".join(style_tone),
         vs_camera_style=vs.get("camera_style", "locked-off — no handheld"),
         vs_color_palette_named=named_palette,
         vs_lighting=vs.get("lighting", "soft natural window light"),

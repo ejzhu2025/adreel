@@ -70,11 +70,27 @@ CRITICAL — storyboard desc rules:
 """
 
 
+def _get_prompt_addendum() -> str:
+    """Read planner_prompt_addendum from system_config (auto-fix loop)."""
+    try:
+        import json as _json
+        import agent.deps as _deps
+        val = _deps.db().get_system_config("planner_prompt_addendum")
+        return _json.loads(val) if val else ""
+    except Exception:
+        return ""
+
+
 def planner_llm(state: dict[str, Any]) -> dict[str, Any]:
     project_id = state.get("project_id", str(uuid.uuid4())[:8])
 
     # Build LLM call function
     llm_call = _build_llm_call()
+
+    # Inject auto-fix addendum into state so creative_pipeline can append it
+    addendum = _get_prompt_addendum()
+    if addendum:
+        state = {**state, "_planner_addendum": addendum}
 
     # Import pipeline
     from agent.nodes.creative_pipeline import run_creative_pipeline

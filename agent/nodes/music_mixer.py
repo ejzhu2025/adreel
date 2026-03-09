@@ -41,7 +41,7 @@ def _select_tone(brief: str, style_tone: str | list) -> str:
 
     # Score against both style_tone (weighted 3x) and brief (1x)
     text = f"{style_tone_str} {style_tone_str} {style_tone_str} {brief}".lower()
-    scores = {tone: sum(kw in text for kw in kws) for tone, kws in _TONE_MAP.items()}
+    scores = {tone: sum(text.count(kw) for kw in kws) for tone, kws in _TONE_MAP.items()}
     best = max(scores, key=lambda t: scores[t])
     return best if scores[best] > 0 else "warm"
 
@@ -86,12 +86,9 @@ def music_mixer(state: dict[str, Any]) -> dict[str, Any]:
 
     brief = state.get("brief", "")
     plan = state.get("plan", {})
-    # Prefer user-confirmed style_tone from clarification, fall back to plan field
-    style_tone = (
-        state.get("clarification_answers", {}).get("style_tone")
-        or plan.get("style_tone", "")
-    )
-    tone = _select_tone(brief, style_tone)
+    # Infer tone from brief + plan mood (style_tone chip removed from UI)
+    mood = plan.get("concept", {}).get("mood", "") if isinstance(plan.get("concept"), dict) else ""
+    tone = _select_tone(brief, mood)
     prompt = _TONE_PROMPTS[tone]
 
     duration_sec = int(_probe_duration(branded_path) or 30)

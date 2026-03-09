@@ -57,15 +57,96 @@ class Database:
             metadata   TEXT NOT NULL DEFAULT '{}'
         );
         CREATE TABLE IF NOT EXISTS feedback (
-            id         INTEGER PRIMARY KEY AUTOINCREMENT,
-            project_id TEXT NOT NULL,
-            text       TEXT NOT NULL,
-            rating     INTEGER,
-            created_at TEXT NOT NULL
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id       TEXT NOT NULL,
+            text             TEXT NOT NULL DEFAULT '',
+            rating           INTEGER,
+            -- v2 fields (added via migration below)
+            user_id          TEXT NOT NULL DEFAULT '',
+            user_name        TEXT NOT NULL DEFAULT '',
+            rating_overall   INTEGER,
+            tags             TEXT NOT NULL DEFAULT '[]',
+            credits_spent    INTEGER NOT NULL DEFAULT 0,
+            review_status    TEXT NOT NULL DEFAULT 'pending',
+            review_score     INTEGER,
+            review_reasoning TEXT,
+            credits_awarded  INTEGER NOT NULL DEFAULT 0,
+            reviewed_at      TEXT,
+            analysis_batch_id TEXT,
+            created_at       TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS feedback_categories (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            label          TEXT NOT NULL UNIQUE,
+            description    TEXT NOT NULL DEFAULT '',
+            frequency      INTEGER NOT NULL DEFAULT 0,
+            first_seen_at  TEXT NOT NULL,
+            last_active_at TEXT NOT NULL,
+            is_active      INTEGER NOT NULL DEFAULT 1
+        );
+        CREATE TABLE IF NOT EXISTS feedback_analysis (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            batch_id       TEXT UNIQUE NOT NULL,
+            analysis_date  TEXT NOT NULL,
+            feedback_count INTEGER NOT NULL DEFAULT 0,
+            report_json    TEXT NOT NULL DEFAULT '{}',
+            fix_status     TEXT NOT NULL DEFAULT 'pending',
+            fixes_json     TEXT NOT NULL DEFAULT '[]',
+            created_at     TEXT NOT NULL,
+            completed_at   TEXT
+        );
+        CREATE TABLE IF NOT EXISTS feedback_fix_log (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            batch_id    TEXT NOT NULL,
+            fix_type    TEXT NOT NULL DEFAULT 'config_change',
+            target_key  TEXT NOT NULL,
+            old_value   TEXT,
+            new_value   TEXT,
+            applied     INTEGER NOT NULL DEFAULT 0,
+            applied_at  TEXT,
+            notes       TEXT,
+            created_at  TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS system_config (
+            key         TEXT PRIMARY KEY,
+            value       TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            updated_at  TEXT NOT NULL,
+            updated_by  TEXT NOT NULL DEFAULT 'system'
         );
         """
         with self._conn() as conn:
             conn.executescript(ddl)
+        self._migrate_feedback_schema()
+        self._migrate_projects_schema()
+
+    def _migrate_projects_schema(self) -> None:
+        """Add title column to projects table (idempotent)."""
+        with self._conn() as conn:
+            existing = {row[1] for row in conn.execute("PRAGMA table_info(projects)")}
+            if "title" not in existing:
+                conn.execute("ALTER TABLE projects ADD COLUMN title TEXT")
+
+    def _migrate_feedback_schema(self) -> None:
+        """Add v2 columns to feedback table for existing DBs (idempotent)."""
+        new_cols = {
+            "user_id": "TEXT NOT NULL DEFAULT ''",
+            "user_name": "TEXT NOT NULL DEFAULT ''",
+            "rating_overall": "INTEGER",
+            "tags": "TEXT NOT NULL DEFAULT '[]'",
+            "credits_spent": "INTEGER NOT NULL DEFAULT 0",
+            "review_status": "TEXT NOT NULL DEFAULT 'pending'",
+            "review_score": "INTEGER",
+            "review_reasoning": "TEXT",
+            "credits_awarded": "INTEGER NOT NULL DEFAULT 0",
+            "reviewed_at": "TEXT",
+            "analysis_batch_id": "TEXT",
+        }
+        with self._conn() as conn:
+            existing = {row[1] for row in conn.execute("PRAGMA table_info(feedback)")}
+            for col, typedef in new_cols.items():
+                if col not in existing:
+                    conn.execute(f"ALTER TABLE feedback ADD COLUMN {col} {typedef}")
 
     # ── Brand kits ────────────────────────────────────────────────────────────
 
@@ -184,6 +265,17 @@ class Database:
                 (status, _now(), project_id),
             )
 
+    def delete_project(self, project_id: str) -> None:
+        with self._conn() as conn:
+            conn.execute("DELETE FROM projects WHERE project_id=?", (project_id,))
+
+    def set_project_title(self, project_id: str, title: str) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE projects SET title=? WHERE project_id=?",
+                (title, project_id),
+            )
+
     # ── Assets ────────────────────────────────────────────────────────────────
 
     def upsert_asset(
@@ -217,11 +309,34 @@ class Database:
     # ── Feedback ──────────────────────────────────────────────────────────────
 
     def add_feedback(self, project_id: str, text: str, rating: Optional[int] = None) -> None:
+        """Legacy minimal insert (kept for backward compat)."""
         with self._conn() as conn:
             conn.execute(
                 "INSERT INTO feedback (project_id,text,rating,created_at) VALUES (?,?,?,?)",
                 (project_id, text, rating, _now()),
             )
+
+    def add_feedback_v2(
+        self,
+        project_id: str,
+        user_id: str = "",
+        user_name: str = "",
+        rating_overall: Optional[int] = None,
+        tags: list | None = None,
+        text: str = "",
+        credits_spent: int = 0,
+    ) -> int:
+        """Full v2 feedback insert. Returns new row id."""
+        with self._conn() as conn:
+            cur = conn.execute(
+                """INSERT INTO feedback
+                   (project_id, user_id, user_name, rating_overall, tags, text,
+                    credits_spent, review_status, created_at)
+                   VALUES (?,?,?,?,?,?,?,'pending',?)""",
+                (project_id, user_id, user_name, rating_overall,
+                 json.dumps(tags or []), text, credits_spent, _now()),
+            )
+            return cur.lastrowid  # type: ignore[return-value]
 
     def get_feedback(self, project_id: str) -> list[dict]:
         with self._conn() as conn:
@@ -229,3 +344,234 @@ class Database:
                 "SELECT * FROM feedback WHERE project_id=? ORDER BY created_at DESC", (project_id,)
             ).fetchall()
         return [dict(r) for r in rows]
+
+    def get_feedback_by_id(self, feedback_id: int) -> Optional[dict]:
+        with self._conn() as conn:
+            row = conn.execute(
+                """SELECT f.*, p.brief FROM feedback f
+                   LEFT JOIN projects p ON p.project_id = f.project_id
+                   WHERE f.id=?""",
+                (feedback_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def get_feedback_by_user(self, user_id: str, limit: int = 50) -> list[dict]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                """SELECT f.*, p.brief,
+                   fl.notes as fix_notes, fl.applied as fix_applied, fl.applied_at
+                   FROM feedback f
+                   LEFT JOIN projects p ON p.project_id = f.project_id
+                   LEFT JOIN feedback_fix_log fl ON fl.batch_id = f.analysis_batch_id
+                       AND fl.applied = 1
+                   WHERE f.user_id=?
+                   ORDER BY f.created_at DESC LIMIT ?""",
+                (user_id, limit),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def has_feedback_for_project(self, user_id: str, project_id: str) -> bool:
+        """Return True if this user has any feedback (any status) for this project."""
+        if not user_id:
+            return False
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT id FROM feedback WHERE user_id=? AND project_id=? LIMIT 1",
+                (user_id, project_id),
+            ).fetchone()
+        return row is not None
+
+    def get_recent_feedback(self, user_id: str, project_id: str, minutes: int = 10) -> list[dict]:
+        from datetime import timedelta
+        since = (datetime.now(timezone.utc) - timedelta(minutes=minutes)).isoformat()
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT id FROM feedback WHERE user_id=? AND project_id=? AND created_at>=?",
+                (user_id, project_id, since),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def update_feedback_review(
+        self,
+        feedback_id: int,
+        score: int,
+        reasoning: str,
+        credits: int,
+    ) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                """UPDATE feedback SET review_status='reviewed', review_score=?,
+                   review_reasoning=?, credits_awarded=?, reviewed_at=? WHERE id=?""",
+                (score, reasoning, credits, _now(), feedback_id),
+            )
+
+    def get_daily_feedback_credits(self, user_id: str) -> int:
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT COALESCE(SUM(credits_awarded),0) FROM feedback "
+                "WHERE user_id=? AND DATE(created_at)=?",
+                (user_id, today),
+            ).fetchone()
+        return row[0] if row else 0
+
+    def get_feedback_for_analysis(self, since: str) -> list[dict]:
+        """Return reviewed feedback (score>=20) since given ISO timestamp."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                """SELECT f.*, p.brief FROM feedback f
+                   LEFT JOIN projects p ON p.project_id = f.project_id
+                   WHERE f.review_status='reviewed' AND f.review_score >= 20
+                   AND f.created_at >= ? AND f.analysis_batch_id IS NULL
+                   ORDER BY f.created_at DESC LIMIT 200""",
+                (since,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def mark_feedback_analyzed(self, feedback_ids: list[int], batch_id: str) -> None:
+        if not feedback_ids:
+            return
+        placeholders = ",".join("?" * len(feedback_ids))
+        with self._conn() as conn:
+            conn.execute(
+                f"UPDATE feedback SET analysis_batch_id=? WHERE id IN ({placeholders})",
+                [batch_id, *feedback_ids],
+            )
+
+    # ── Feedback categories ────────────────────────────────────────────────────
+
+    def upsert_feedback_category(self, label: str, description: str = "") -> None:
+        now = _now()
+        with self._conn() as conn:
+            existing = conn.execute(
+                "SELECT id, frequency FROM feedback_categories WHERE label=?", (label,)
+            ).fetchone()
+            if existing:
+                conn.execute(
+                    "UPDATE feedback_categories SET frequency=frequency+1, last_active_at=?, "
+                    "description=CASE WHEN description='' THEN ? ELSE description END WHERE label=?",
+                    (now, description, label),
+                )
+            else:
+                conn.execute(
+                    "INSERT INTO feedback_categories (label,description,frequency,first_seen_at,last_active_at,is_active) "
+                    "VALUES (?,?,1,?,?,1)",
+                    (label, description, now, now),
+                )
+            # Keep only top 5 active (by frequency)
+            conn.execute(
+                "UPDATE feedback_categories SET is_active=0"
+            )
+            conn.execute(
+                "UPDATE feedback_categories SET is_active=1 WHERE id IN "
+                "(SELECT id FROM feedback_categories ORDER BY frequency DESC LIMIT 5)"
+            )
+
+    def get_active_feedback_categories(self) -> list[dict]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT label, description, frequency FROM feedback_categories "
+                "WHERE is_active=1 ORDER BY frequency DESC"
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_all_feedback_categories(self) -> list[dict]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT label, description, frequency FROM feedback_categories ORDER BY frequency DESC"
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    # ── Feedback analysis ──────────────────────────────────────────────────────
+
+    def save_analysis(
+        self,
+        batch_id: str,
+        feedback_count: int,
+        report: dict,
+        fixes: list,
+    ) -> None:
+        now = _now()
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT OR REPLACE INTO feedback_analysis
+                   (batch_id, analysis_date, feedback_count, report_json, fixes_json,
+                    fix_status, created_at, completed_at)
+                   VALUES (?,?,?,?,?,'pending',?,?)""",
+                (batch_id, batch_id, feedback_count,
+                 json.dumps(report), json.dumps(fixes), now, now),
+            )
+
+    def get_recent_analyses(self, limit: int = 7) -> list[dict]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM feedback_analysis ORDER BY analysis_date DESC LIMIT ?", (limit,)
+            ).fetchall()
+        result = []
+        for r in rows:
+            d = dict(r)
+            d["report_json"] = json.loads(d["report_json"] or "{}")
+            d["fixes_json"] = json.loads(d["fixes_json"] or "[]")
+            result.append(d)
+        return result
+
+    def add_fix_log(
+        self,
+        batch_id: str,
+        fix_type: str,
+        target_key: str,
+        old_value: Optional[str],
+        new_value: Optional[str],
+        notes: str = "",
+        applied: bool = False,
+    ) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO feedback_fix_log
+                   (batch_id, fix_type, target_key, old_value, new_value,
+                    applied, applied_at, notes, created_at)
+                   VALUES (?,?,?,?,?,?,?,?,?)""",
+                (batch_id, fix_type, target_key, old_value, new_value,
+                 1 if applied else 0,
+                 _now() if applied else None,
+                 notes, _now()),
+            )
+
+    def get_adopted_fixes(self, limit: int = 10) -> list[dict]:
+        """Return applied fixes with linked feedback for changelog attribution."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                """SELECT fl.*, fa.analysis_date,
+                   GROUP_CONCAT(DISTINCT f.user_name) as contributor_names
+                   FROM feedback_fix_log fl
+                   LEFT JOIN feedback_analysis fa ON fa.batch_id = fl.batch_id
+                   LEFT JOIN feedback f ON f.analysis_batch_id = fl.batch_id
+                       AND f.review_score >= 60 AND f.user_name != ''
+                   WHERE fl.applied = 1
+                   GROUP BY fl.id
+                   ORDER BY fl.applied_at DESC LIMIT ?""",
+                (limit,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    # ── System config ──────────────────────────────────────────────────────────
+
+    def upsert_system_config(self, key: str, value: str, updated_by: str = "system") -> None:
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT OR REPLACE INTO system_config (key, value, updated_at, updated_by)
+                   VALUES (?,?,?,?)""",
+                (key, value, _now(), updated_by),
+            )
+
+    def get_system_config(self, key: str) -> Optional[str]:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT value FROM system_config WHERE key=?", (key,)
+            ).fetchone()
+        return row[0] if row else None
+
+    def list_system_configs(self) -> dict:
+        with self._conn() as conn:
+            rows = conn.execute("SELECT key, value FROM system_config").fetchall()
+        return {r[0]: json.loads(r[1]) for r in rows}

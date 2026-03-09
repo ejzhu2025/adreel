@@ -55,10 +55,6 @@ def partial_executor(state: dict[str, Any]) -> dict[str, Any]:
         from render.ffmpeg_composer import FFmpegComposer
 
         fc = FFmpegComposer()
-        style_tone = (
-            state.get("clarification_answers", {}).get("style_tone")
-            or updated_plan.get("style_tone", ["fresh"])
-        )
         console.print(
             f"[cyan][partial_executor] Re-rendering shots {affected_indices} "
             f"(quality={quality}), reusing {len(shot_list) - len(affected_indices)} clips[/cyan]"
@@ -68,9 +64,8 @@ def partial_executor(state: dict[str, Any]) -> dict[str, Any]:
             shot = updated_plan["shot_list"][i]
             scene = updated_plan["storyboard"][i] if i < len(updated_plan.get("storyboard", [])) else {}
             desc = scene.get("desc", shot.get("text_overlay", "cinematic product shot"))
-            tone_str = ", ".join(style_tone) if isinstance(style_tone, list) else str(style_tone)
             prompt = (
-                f"{desc}. Style: {tone_str}. "
+                f"{desc}. "
                 "Vertical social media video, smooth motion, vibrant colors, cinematic quality."
             )
             raw_path = str(work_dir / f"{shot['shot_id']}_raw.mp4")

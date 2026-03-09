@@ -9,8 +9,8 @@ from pydantic import BaseModel
 
 from web.auth.deps import current_user
 from web.auth.models import User
-from web.billing.credits import add_credits, get_credits
-from web.billing.stripe_client import PLANS, create_checkout_session, verify_webhook
+from web.billing.credits import fulfill_session, get_credits
+from web.billing.stripe_client import PLANS, create_checkout_session, fetch_checkout_session, verify_webhook
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/billing", tags=["billing"])
@@ -46,6 +46,41 @@ def create_checkout(body: CheckoutRequest, user: User = Depends(current_user)):
         raise HTTPException(502, "Payment service unavailable")
 
 
+# ── Fulfill (no-webhook fallback) ─────────────────────────────────────────────
+
+class FulfillRequest(BaseModel):
+    session_id: str
+
+
+@router.post("/fulfill")
+def fulfill(body: FulfillRequest, user: User = Depends(current_user)):
+    """Called by frontend after Stripe redirects back with ?session_id=...
+    Verifies the session is paid and idempotently adds credits."""
+    try:
+        session = fetch_checkout_session(body.session_id)
+    except Exception as exc:
+        logger.error("Stripe session fetch error: %s", exc)
+        raise HTTPException(502, "Could not verify payment")
+
+    if session["payment_status"] != "paid":
+        raise HTTPException(402, f"Payment not completed (status: {session['payment_status']})")
+
+    # Security: verify this session belongs to the requesting user
+    if session["user_id"] != user.id:
+        raise HTTPException(403, "Session does not belong to this user")
+
+    was_new, new_balance = fulfill_session(
+        session_id=body.session_id,
+        user_id=user.id,
+        credits=session["credits"],
+    )
+    logger.info(
+        "Fulfill session=%s user=%s credits=%d was_new=%s new_balance=%d",
+        body.session_id, user.id, session["credits"], was_new, new_balance,
+    )
+    return {"credits_added": session["credits"] if was_new else 0, "balance": new_balance}
+
+
 # ── Balance ───────────────────────────────────────────────────────────────────
 
 @router.get("/balance")
@@ -75,11 +110,16 @@ async def stripe_webhook(
         credits = int(meta.get("credits", 0))
 
         if user_id and credits > 0:
-            new_balance = add_credits(user_id, credits)
-            logger.info(
-                "Credits added: user=%s credits=%d new_balance=%d",
-                user_id, credits, new_balance,
+            was_new, new_balance = fulfill_session(
+                session_id=session["id"],
+                user_id=user_id,
+                credits=credits,
             )
+            if was_new:
+                logger.info("Webhook: Credits added: user=%s credits=%d new_balance=%d",
+                            user_id, credits, new_balance)
+            else:
+                logger.info("Webhook: Session already fulfilled (skipped): user=%s", user_id)
 
     # Always return 200 so Stripe doesn't retry
     return {"received": True}

@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 import agent.deps as deps
-from memory.schemas import BrandKit, ColorPalette, LogoConfig
+from memory.schemas import BrandKit, ColorPalette, LogoConfig, SubtitleStyle, IntroOutro
 
 router = APIRouter()
 
@@ -42,6 +42,9 @@ class CreateBrandKitRequest(BaseModel):
     name: str
     colors: dict = {}
     safe_area: str = "top_right"
+    font_size: int = 44
+    caption_position: str = "bottom_center"
+    outro_cta: str = "Order now"
 
 
 @router.post("/api/brand-kits")
@@ -58,6 +61,8 @@ async def create_brand_kit(req: CreateBrandKitRequest):
         name=req.name,
         logo=LogoConfig(path="", safe_area=req.safe_area),
         colors=colors,
+        subtitle_style=SubtitleStyle(font_size=req.font_size, position=req.caption_position),
+        intro_outro=IntroOutro(outro_cta=req.outro_cta),
     )
     deps.db().upsert_brand_kit(kit)
     return kit.model_dump()
@@ -70,6 +75,9 @@ class UpdateBrandKitRequest(BaseModel):
     name: Optional[str] = None
     colors: Optional[dict] = None
     safe_area: Optional[str] = None
+    font_size: Optional[int] = None
+    caption_position: Optional[str] = None
+    outro_cta: Optional[str] = None
 
 
 @router.put("/api/brand-kits/{brand_id}")
@@ -88,6 +96,12 @@ async def update_brand_kit(brand_id: str, req: UpdateBrandKitRequest):
         )
     if req.safe_area is not None:
         kit.logo.safe_area = req.safe_area
+    if req.font_size is not None:
+        kit.subtitle_style.font_size = req.font_size
+    if req.caption_position is not None:
+        kit.subtitle_style.position = req.caption_position
+    if req.outro_cta is not None:
+        kit.intro_outro.outro_cta = req.outro_cta
     deps.db().upsert_brand_kit(kit)
     return kit.model_dump()
 

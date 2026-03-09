@@ -17,12 +17,25 @@ MAX_ATTEMPTS = 2
 RELEVANCE_THRESHOLD = 5
 
 
+def _get_config(key: str, default):
+    """Read a runtime config value from system_config table, fall back to default."""
+    try:
+        import json as _json
+        import agent.deps as _deps
+        val = _deps.db().get_system_config(key)
+        return _json.loads(val) if val is not None else default
+    except Exception:
+        return default
+
+
 def quality_gate(state: dict[str, Any]) -> dict[str, Any]:
     plan = state.get("plan", {})
     branded_path = state.get("branded_clip_path", "")
     brand_kit = state.get("brand_kit", {})
     caption_segments = state.get("caption_segments", [])
     attempt = state.get("qc_attempt", 1)
+    max_attempts = _get_config("max_qc_attempts", MAX_ATTEMPTS)
+    relevance_threshold = _get_config("relevance_threshold", RELEVANCE_THRESHOLD)
 
     issues: list[str] = []
     auto_fix_applied = False
@@ -113,7 +126,7 @@ def quality_gate(state: dict[str, Any]) -> dict[str, Any]:
     if scene_clips and plan_storyboard and os.getenv("ANTHROPIC_API_KEY"):
         relevance_results = _check_shot_relevance(scene_clips, plan_storyboard)
         for r in relevance_results:
-            if r["score"] < RELEVANCE_THRESHOLD:
+            if r["score"] < relevance_threshold:
                 low_relevance_shots.append(r["shot_id"])
                 issues.append(
                     f"Shot {r['shot_id']} low relevance score {r['score']}/10: {r['reason']}"
@@ -128,7 +141,7 @@ def quality_gate(state: dict[str, Any]) -> dict[str, Any]:
     else:
         console.print("[dim][QC] Relevance check skipped (no clips/storyboard/API key)[/dim]")
 
-    passed = len(issues) == 0 or (auto_fix_applied and attempt < MAX_ATTEMPTS)
+    passed = len(issues) == 0 or (auto_fix_applied and attempt < max_attempts)
 
     if issues:
         severity = "auto-fixed" if auto_fix_applied else "FAILED"
@@ -292,7 +305,7 @@ def _check_shot_relevance(
                 "reason": reason,
                 "missing_elements": missing,
             })
-            icon = "✅" if score >= RELEVANCE_THRESHOLD else "⚠️"
+            icon = "✅" if score >= relevance_threshold else "⚠️"
             console.print(
                 f"  {icon} {shot_id} [{score}/10] {reason[:80]}"
             )

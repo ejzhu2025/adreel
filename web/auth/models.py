@@ -25,6 +25,12 @@ CREATE TABLE IF NOT EXISTS users (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS fulfilled_sessions (
+    session_id TEXT PRIMARY KEY,          -- Stripe checkout session ID
+    user_id    TEXT NOT NULL,
+    credits    INTEGER NOT NULL,
+    fulfilled_at TEXT NOT NULL
+);
 """
 
 
@@ -72,7 +78,7 @@ def upsert_user(google_id: str, email: str, name: str, picture: str) -> User:
     with _conn() as conn:
         conn.execute(
             """INSERT INTO users (id, email, name, picture, credits, created_at, updated_at)
-               VALUES (?, ?, ?, ?, 0, ?, ?)
+               VALUES (?, ?, ?, ?, 10, ?, ?)
                ON CONFLICT(id) DO UPDATE SET
                    name=excluded.name,
                    picture=excluded.picture,

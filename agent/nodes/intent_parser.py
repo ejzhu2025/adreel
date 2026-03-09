@@ -66,6 +66,6 @@ def intent_parser(state: dict[str, Any]) -> dict[str, Any]:
     )
 
     return {
-        "clarification_answers": {**state.get("clarification_answers", {}), **pre_answers},
+        "clarification_answers": {**pre_answers, **state.get("clarification_answers", {})},
         "messages": messages,
     }

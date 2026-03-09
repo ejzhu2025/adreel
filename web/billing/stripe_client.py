@@ -11,7 +11,7 @@ import stripe
 # 3. Go to Webhooks → Add endpoint → copy "Signing secret" → STRIPE_WEBHOOK_SECRET
 STRIPE_SECRET_KEY      = os.getenv("STRIPE_SECRET_KEY",      "sk_test_PLACEHOLDER")
 STRIPE_WEBHOOK_SECRET  = os.getenv("STRIPE_WEBHOOK_SECRET",  "whsec_PLACEHOLDER")
-STRIPE_SUCCESS_URL     = os.getenv("STRIPE_SUCCESS_URL",     "http://localhost:8000/?payment=success")
+STRIPE_SUCCESS_URL     = os.getenv("STRIPE_SUCCESS_URL",     "http://localhost:8000/?payment=success&session_id={CHECKOUT_SESSION_ID}")
 STRIPE_CANCEL_URL      = os.getenv("STRIPE_CANCEL_URL",      "http://localhost:8000/?payment=cancel")
 
 stripe.api_key = STRIPE_SECRET_KEY
@@ -67,6 +67,20 @@ def create_checkout_session(plan_id: str, user_id: str, user_email: str) -> str:
         metadata={"user_id": user_id, "plan_id": plan_id, "credits": plan["credits"]},
     )
     return session.url  # type: ignore[return-value]
+
+
+def fetch_checkout_session(session_id: str) -> dict:
+    """Fetch a Stripe Checkout Session and return relevant fields."""
+    session = stripe.checkout.Session.retrieve(session_id)
+    meta = session.get("metadata") or {}
+    return {
+        "id": session.id,
+        "payment_status": session.payment_status,  # "paid" | "unpaid" | "no_payment_required"
+        "status": session.status,                  # "open" | "complete" | "expired"
+        "user_id": meta.get("user_id", ""),
+        "plan_id": meta.get("plan_id", ""),
+        "credits": int(meta.get("credits", 0)),
+    }
 
 
 def verify_webhook(payload: bytes, sig_header: str) -> stripe.Event:
