@@ -88,8 +88,7 @@ def partial_executor(state: dict[str, Any]) -> dict[str, Any]:
                 f"[cyan]Re-rendering {len(affected_indices)} shot(s)…",
                 total=len(affected_indices),
             )
-            _max_w = 2 if replicate_token else min(4, len(affected_indices))
-            with ThreadPoolExecutor(max_workers=_max_w) as pool:
+            with ThreadPoolExecutor(max_workers=min(4, len(affected_indices))) as pool:
                 futures = {pool.submit(_rerender, i): i for i in affected_indices}
                 for fut in as_completed(futures):
                     i, clip = fut.result()
