@@ -4,7 +4,7 @@ from __future__ import annotations
 import secrets
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 
 from web.auth.deps import COOKIE_NAME, JWT_EXPIRE_DAYS, create_token, current_user
 from web.auth.google import exchange_code, get_authorization_url, get_userinfo
@@ -69,3 +69,38 @@ def logout():
 def me(user=Depends(current_user)):
     """Return current user info (used by frontend to check login state)."""
     return user.to_dict()
+
+
+# ── Guest access code ─────────────────────────────────────────────────────────
+
+from web.routers.projects import GUEST_COOKIE, _GUEST_CODES  # noqa: E402
+
+
+@router.get("/guest-access")
+def guest_access_status(request: Request):
+    """Check if the current request has a valid guest access code cookie."""
+    code = request.cookies.get(GUEST_COOKIE, "")
+    valid = bool(_GUEST_CODES) and code in _GUEST_CODES
+    return {"valid": valid}
+
+
+class GuestAccessRequest(BaseModel):
+    code: str
+
+from pydantic import BaseModel  # noqa: E402
+
+
+@router.post("/guest-access")
+def guest_access_submit(body: GuestAccessRequest):
+    """Validate a guest access code and set a cookie if valid."""
+    if not _GUEST_CODES or body.code.strip() not in _GUEST_CODES:
+        raise HTTPException(status_code=403, detail="Invalid access code")
+    resp = JSONResponse({"ok": True})
+    resp.set_cookie(
+        key=GUEST_COOKIE,
+        value=body.code.strip(),
+        httponly=True,
+        samesite="lax",
+        max_age=86400 * 30,  # 30 days
+    )
+    return resp

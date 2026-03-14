@@ -12,7 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
@@ -20,19 +20,31 @@ import agent.deps as deps
 from web.auth.deps import optional_user
 from web.app_state import _run_events, _run_queues
 
-# When VAH_GUEST_FREE=1 (default), unauthenticated users skip all credit checks.
-# Set VAH_GUEST_FREE=0 in .env to require credits for guests too.
-_GUEST_FREE = os.environ.get("VAH_GUEST_FREE", "1") != "0"
+# Comma-separated list of valid guest access codes, e.g. VAH_GUEST_CODES=DEMO2024,BETA123
+_GUEST_CODES: set[str] = {
+    c.strip() for c in os.environ.get("VAH_GUEST_CODES", "").split(",") if c.strip()
+}
+
+GUEST_COOKIE = "vah_guest"
 
 
-def _billing_user_id(auth_user, fallback_user_id: str) -> str | None:
-    """Return the user_id to use for billing.
-    Returns None when the user is a guest and VAH_GUEST_FREE is enabled (skip all checks)."""
+def _guest_code_valid(request: Request) -> bool:
+    """Return True if the request carries a valid guest access code cookie."""
+    code = request.cookies.get(GUEST_COOKIE, "")
+    return bool(_GUEST_CODES) and code in _GUEST_CODES
+
+
+def _billing_user_id(auth_user, request: Request) -> str | None:
+    """Return the user_id to use for billing, or raise 401 if access is denied.
+    - Logged-in user  → their user_id (credits deducted normally)
+    - Guest with valid code cookie → None (free, no deduction)
+    - Anyone else → 401
+    """
     if auth_user:
         return auth_user.id
-    if _GUEST_FREE:
-        return None  # guest → unlimited
-    return fallback_user_id or None
+    if _guest_code_valid(request):
+        return None  # valid guest → unlimited
+    raise HTTPException(status_code=401, detail="Login required or enter an access code")
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -404,7 +416,7 @@ async def plan_project(
 @router.post("/api/projects/{project_id}/execute")
 async def execute_project(
     project_id: str, req: ExecuteRequest, background_tasks: BackgroundTasks,
-    auth_user=Depends(optional_user),
+    request: Request, auth_user=Depends(optional_user),
 ):
     """Run execution-only phase using stored or provided plan."""
     proj = deps.db().get_project(project_id)
@@ -445,7 +457,7 @@ async def execute_project(
 
     deps.db().update_project_plan(project_id, {**plan, "_quality": quality})
 
-    user_id = _billing_user_id(auth_user, proj.get("user_id", ""))
+    user_id = _billing_user_id(auth_user, request)
     shot_count = len(plan.get("shot_list") or []) or 7
     from web.billing.credits import COSTS, get_credits
     cost_per_shot = COSTS["shot_hd"] if quality == "hd" else COSTS["shot_turbo"]
@@ -499,7 +511,7 @@ async def execute_project(
 @router.post("/api/projects/{project_id}/rerender-shot")
 async def rerender_shot(
     project_id: str, req: RerenderShotRequest, background_tasks: BackgroundTasks,
-    auth_user=Depends(optional_user),
+    request: Request, auth_user=Depends(optional_user),
 ):
     """Re-render a single shot by index without replanning or change classification."""
     proj = deps.db().get_project(project_id)
@@ -527,7 +539,7 @@ async def rerender_shot(
     brand_kit_obj = deps.db().get_brand_kit(proj["brand_id"])
     from web.billing.credits import COSTS, get_credits
     cost_per_shot = COSTS["shot_hd"] if quality == "hd" else COSTS["shot_turbo"]
-    user_id = _billing_user_id(auth_user, proj.get("user_id", ""))
+    user_id = _billing_user_id(auth_user, request)
     if user_id:
         balance = get_credits(user_id)
         if balance < cost_per_shot:
@@ -596,7 +608,7 @@ async def rerender_shot(
 @router.post("/api/projects/{project_id}/modify")
 async def modify_project(
     project_id: str, req: ModifyRequest, background_tasks: BackgroundTasks,
-    auth_user=Depends(optional_user),
+    request: Request, auth_user=Depends(optional_user),
 ):
     """Smart modify: classify feedback → local (partial re-render) or global (full replan)."""
     proj = deps.db().get_project(project_id)
@@ -636,7 +648,7 @@ async def modify_project(
         "quality": quality,
     }
 
-    modify_user_id = _billing_user_id(auth_user, proj.get("user_id", ""))
+    modify_user_id = _billing_user_id(auth_user, request)
     from web.billing.credits import COSTS as _COSTS
     _cost_per_shot = _COSTS["shot_hd"] if quality == "hd" else _COSTS["shot_turbo"]
 
