@@ -16,8 +16,8 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-_TURSO_URL   = os.getenv("TURSO_DATABASE_URL", "")
-_TURSO_TOKEN = os.getenv("TURSO_AUTH_TOKEN", "")
+_TURSO_URL   = "".join(os.getenv("TURSO_DATABASE_URL", "").split())
+_TURSO_TOKEN = "".join(os.getenv("TURSO_AUTH_TOKEN", "").split())
 _USE_TURSO   = bool(_TURSO_URL and _TURSO_TOKEN)
 
 
