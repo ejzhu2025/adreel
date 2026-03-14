@@ -27,9 +27,11 @@ def executor_pipeline(state: dict[str, Any]) -> dict[str, Any]:
     shot_list = plan.get("shot_list", [])
     scene_clips: list[dict] = []
 
+    replicate_token = os.getenv("REPLICATE_API_TOKEN")
     fal_key = os.getenv("FAL_KEY") or os.getenv("FAL_API_KEY")
     import sys
-    print(f"[executor] FAL_KEY present={bool(fal_key)} val_prefix={str(fal_key)[:12] if fal_key else 'NONE'}", file=sys.stderr, flush=True)
+    _provider = "replicate" if replicate_token else ("fal" if fal_key else "pil")
+    print(f"[executor] provider={_provider}", file=sys.stderr, flush=True)
 
     with Progress(
         SpinnerColumn(),
@@ -38,10 +40,18 @@ def executor_pipeline(state: dict[str, Any]) -> dict[str, Any]:
     ) as progress:
         task = progress.add_task("[cyan]Rendering shots…", total=len(shot_list))
 
-        if fal_key:
-            # ── fal.ai T2V path ──────────────────────────────────────────────
-            os.environ.setdefault("FAL_KEY", fal_key)
-            from render.fal_t2v import generate_clip
+        if replicate_token or fal_key:
+            # ── AI T2V path (Replicate preferred, fal.ai fallback) ───────────
+            if replicate_token:
+                from render.replicate_t2v import generate_clip
+                from render.replicate_i2v import (
+                    generate_clip_from_image, build_shot_motion_prompt, build_outro_motion_prompt,
+                )
+                _using_replicate = True
+            else:
+                os.environ.setdefault("FAL_KEY", fal_key)
+                from render.fal_t2v import generate_clip
+                _using_replicate = False
 
             storyboard = plan.get("storyboard", [])
             style_tone = state.get("clarification_answers", {}).get("style_tone", ["fresh"])
@@ -67,7 +77,13 @@ def executor_pipeline(state: dict[str, Any]) -> dict[str, Any]:
                 # features the real product when the user has uploaded a photo.
                 if is_outro and product_image_path and Path(product_image_path).exists():
                     from render.fal_t2i import generate_ad_frame, build_ad_prompt
-                    from render.fal_i2v import generate_clip_from_image, build_outro_motion_prompt
+                    _i2v_gen = (
+                        __import__("render.replicate_i2v", fromlist=["generate_clip_from_image", "build_outro_motion_prompt"])
+                        if _using_replicate else
+                        __import__("render.fal_i2v", fromlist=["generate_clip_from_image", "build_outro_motion_prompt"])
+                    )
+                    generate_clip_from_image = _i2v_gen.generate_clip_from_image
+                    build_outro_motion_prompt = _i2v_gen.build_outro_motion_prompt
                     try:
                         ad_img_path = str(work_dir / f"{shot_id}_ad.png")
                         ad_prompt = build_ad_prompt(
@@ -107,7 +123,13 @@ def executor_pipeline(state: dict[str, Any]) -> dict[str, Any]:
                 if shot_type == "product" \
                         and product_image_path and Path(product_image_path).exists():
                     try:
-                        from render.fal_i2v import generate_clip_from_image, build_shot_motion_prompt
+                        _i2v_mod = (
+                            __import__("render.replicate_i2v", fromlist=["generate_clip_from_image", "build_shot_motion_prompt"])
+                            if _using_replicate else
+                            __import__("render.fal_i2v", fromlist=["generate_clip_from_image", "build_shot_motion_prompt"])
+                        )
+                        generate_clip_from_image = _i2v_mod.generate_clip_from_image
+                        build_shot_motion_prompt = _i2v_mod.build_shot_motion_prompt
                         motion_prompt = build_shot_motion_prompt(
                             shot_type, desc, brief=state.get("brief", "")
                         )
@@ -154,7 +176,7 @@ def executor_pipeline(state: dict[str, Any]) -> dict[str, Any]:
             scene_clips = [results[i] for i in range(len(shot_list))]
 
         else:
-            # ── PIL fallback (no FAL_KEY) ─────────────────────────────────────
+            # ── PIL fallback (no REPLICATE_API_TOKEN and no FAL_KEY) ──────────
             fg = FrameGenerator(brand_kit=brand_kit, work_dir=work_dir)
             product_image_path = state.get("product_image_path", "")
             logo_path = brand_kit.get("logo", {}).get("path", "")

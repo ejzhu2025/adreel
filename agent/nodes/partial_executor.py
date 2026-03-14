@@ -47,11 +47,15 @@ def partial_executor(state: dict[str, Any]) -> dict[str, Any]:
             "duration": float(shot.get("duration", 3.5)),
         })
 
+    replicate_token = os.getenv("REPLICATE_API_TOKEN")
     fal_key = os.getenv("FAL_KEY") or os.getenv("FAL_API_KEY")
     rerendered_count = 0
 
-    if fal_key and affected_indices:
-        from render.fal_t2v import generate_clip
+    if (replicate_token or fal_key) and affected_indices:
+        if replicate_token:
+            from render.replicate_t2v import generate_clip
+        else:
+            from render.fal_t2v import generate_clip
         from render.ffmpeg_composer import FFmpegComposer
 
         fc = FFmpegComposer()
@@ -93,8 +97,8 @@ def partial_executor(state: dict[str, Any]) -> dict[str, Any]:
                     progress.advance(task_id)
 
     else:
-        if not fal_key:
-            console.print("[yellow][partial_executor] No FAL_KEY — clips unchanged[/yellow]")
+        if not replicate_token and not fal_key:
+            console.print("[yellow][partial_executor] No REPLICATE_API_TOKEN or FAL_KEY — clips unchanged[/yellow]")
         elif not affected_indices:
             console.print("[dim][partial_executor] No shots to re-render[/dim]")
 
