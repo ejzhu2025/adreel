@@ -78,7 +78,9 @@ def fulfill(body: FulfillRequest, user: User = Depends(current_user)):
         "Fulfill session=%s user=%s credits=%d was_new=%s new_balance=%d",
         body.session_id, user.id, session["credits"], was_new, new_balance,
     )
-    return {"credits_added": session["credits"] if was_new else 0, "balance": new_balance}
+    # Always return the plan's credit amount so the UI shows the correct figure
+    # (webhook may have already fulfilled it, making was_new=False)
+    return {"credits_added": session["credits"], "balance": new_balance}
 
 
 # ── Balance ───────────────────────────────────────────────────────────────────
