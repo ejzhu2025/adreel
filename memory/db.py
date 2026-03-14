@@ -21,6 +21,62 @@ _TURSO_TOKEN = "".join(os.getenv("TURSO_AUTH_TOKEN", "").split())
 _USE_TURSO   = bool(_TURSO_URL and _TURSO_TOKEN)
 
 
+class _TursoRow:
+    """sqlite3.Row-compatible row for libsql (which lacks row_factory)."""
+    __slots__ = ("_d", "_vals")
+
+    def __init__(self, description, values):
+        self._vals = tuple(values)
+        self._d    = {d[0]: v for d, v in zip(description, values)}
+
+    def __getitem__(self, key):
+        if isinstance(key, int):
+            return self._vals[key]
+        return self._d[key]
+
+    def keys(self):
+        return list(self._d.keys())
+
+    def __iter__(self):
+        return iter(self._vals)
+
+    def __len__(self):
+        return len(self._vals)
+
+
+class _TursoCursor:
+    """Wraps a libsql cursor to return _TursoRow objects (sqlite3.Row-compatible)."""
+
+    def __init__(self, cur):
+        self._cur = cur
+
+    def _wrap(self, row):
+        if row is None or self._cur.description is None:
+            return row
+        return _TursoRow(self._cur.description, row)
+
+    def fetchone(self):
+        return self._wrap(self._cur.fetchone())
+
+    def fetchall(self):
+        rows = self._cur.fetchall() or []
+        if not rows or self._cur.description is None:
+            return rows
+        desc = self._cur.description
+        return [_TursoRow(desc, r) for r in rows]
+
+    def __iter__(self):
+        return iter(self.fetchall())
+
+    @property
+    def lastrowid(self):
+        return self._cur.lastrowid
+
+    @property
+    def description(self):
+        return self._cur.description
+
+
 class _SyncConn:
     """Wraps a libsql connection with sqlite3-compatible context manager.
     Calls conn.sync() on open (pull) and after commit (push)."""
@@ -46,7 +102,7 @@ class _SyncConn:
 
     # ── proxy the methods used by Database ───────────────────────────────────
     def execute(self, sql, params=()):
-        return self._c.execute(sql, params)
+        return _TursoCursor(self._c.execute(sql, params))
 
     def executescript(self, sql: str):
         """libsql lacks executescript — split on ';' and execute each statement."""
@@ -59,14 +115,6 @@ class _SyncConn:
                     pass
         self._c.commit()
         self._c.sync()
-
-    @property
-    def row_factory(self):
-        return self._c.row_factory
-
-    @row_factory.setter
-    def row_factory(self, value):
-        self._c.row_factory = value
 
 
 class Database:
@@ -87,7 +135,6 @@ class Database:
                 sync_url=_TURSO_URL,
                 auth_token=_TURSO_TOKEN,
             )
-            raw.row_factory = sqlite3.Row
             return _SyncConn(raw)
         conn = sqlite3.connect(str(self.db_path))
         conn.row_factory = sqlite3.Row
