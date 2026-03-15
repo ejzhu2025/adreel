@@ -197,6 +197,14 @@ async def _run_agent(
     await _run_agent_with_state(project_id, initial_state, queue, graph_fn=build_graph)
 
 
+# Expected wait time for slow nodes (shown in the UI spinner)
+_NODE_ESTIMATED_WAIT: dict[str, str] = {
+    "planner_llm":       "usually takes 3-4 minutes",
+    "executor_pipeline": "usually takes 3-5 minutes",
+    "partial_executor":  "usually takes 1-2 minutes",
+}
+
+
 async def _run_agent_with_state(
     project_id: str,
     initial_state: dict,
@@ -236,11 +244,15 @@ async def _run_agent_with_state(
                             node_name = chunk.get("name", "")
                             ts = datetime.now(timezone.utc).isoformat()
                             node_started_at[node_name] = ts
-                            _emit({
+                            evt: dict = {
                                 "type": "node_start",
                                 "node": node_name,
                                 "timestamp": ts,
-                            })
+                            }
+                            wait_hint = _NODE_ESTIMATED_WAIT.get(node_name)
+                            if wait_hint:
+                                evt["estimated_wait"] = wait_hint
+                            _emit(evt)
                     elif mode == "updates":
                         for node_name, node_output in chunk.items():
                             ts = datetime.now(timezone.utc).isoformat()

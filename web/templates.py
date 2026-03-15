@@ -1175,7 +1175,7 @@ function connectEventStream(projectId, phase) {
 
 function handleEvent(event, projectId, phase) {
   if (event.type === 'node_start') {
-    addNodeSpinner(event.node, event.timestamp);
+    addNodeSpinner(event.node, event.timestamp, event.estimated_wait);
   } else if (event.type === 'node_done') {
     addNodeCard(event.node, event.data, event.stdout, event.timestamp);
     if (event.node === 'plan_checker' && event.data && event.data.plan) {
@@ -1248,7 +1248,7 @@ function clearAgentLog() {
 // Spinner timers: node_name -> intervalId
 const _spinnerTimers = {};
 
-function addNodeSpinner(node, timestamp) {
+function addNodeSpinner(node, timestamp, estimatedWait) {
   const log = document.getElementById('agent-log');
   showAgentLog();
   // Remove any existing spinner for this node
@@ -1257,6 +1257,7 @@ function addNodeSpinner(node, timestamp) {
 
   const meta = NODE_META[node] || { icon: '⚙', label: node, desc: '' };
   const startTime = timestamp ? new Date(timestamp) : new Date();
+  const descText = estimatedWait ? `${meta.desc} · ⏱ ${estimatedWait}` : meta.desc;
 
   const card = document.createElement('div');
   card.className = 'node-card running card p-3 pl-4 fade-in';
@@ -1267,7 +1268,7 @@ function addNodeSpinner(node, timestamp) {
         <span class="text-base">${meta.icon}</span>
         <div>
           <span class="text-sm font-medium text-white">${meta.label}</span>
-          <span class="text-xs text-gray-500 ml-2">${meta.desc}</span>
+          <span class="text-xs text-gray-500 ml-2">${descText}</span>
         </div>
       </div>
       <div class="flex items-center gap-2 flex-shrink-0">

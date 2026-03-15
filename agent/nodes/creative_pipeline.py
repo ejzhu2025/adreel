@@ -7,12 +7,15 @@ from __future__ import annotations
 
 import copy
 import json
+import logging
 import re
+import time
 from typing import Any, Callable
 
 from rich.console import Console
 
 console = Console()
+logger = logging.getLogger(__name__)
 
 # ── Type alias ────────────────────────────────────────────────────────────────
 
@@ -24,7 +27,7 @@ LLMCall = Callable[[str, str], str]  # (system_prompt, user_prompt) -> raw text
 # ══════════════════════════════════════════════════════════════════════════════
 
 DIRECTOR_SYSTEM = """\
-You are a creative director for short-form social media videos.
+You are a creative director for viral short-form social media videos (TikTok / Reels / Shorts).
 Given a brief and brand context, generate 3 DISTINCT creative concepts, then select the best one.
 
 Output ONLY valid JSON (no markdown fences):
@@ -32,16 +35,16 @@ Output ONLY valid JSON (no markdown fences):
   "concepts": [
     {
       "id": "C1",
-      "hook_angle": "<hook strategy, e.g. 'sensory immersion', 'problem-solution', 'surprise reveal'>",
-      "visual_style": "<cinematography style, e.g. 'macro textures + golden-hour lifestyle'>",
+      "hook_angle": "<hook strategy — see archetypes below>",
+      "visual_style": "<cinematography style, e.g. 'POV handheld + ASMR macro inserts'>",
       "key_message": "<core message in 1 sentence>",
       "mood": "<emotional tone, e.g. 'energetic', 'serene', 'playful', 'luxurious'>",
-      "scene_count": <int 3-6>,
+      "scene_count": <int 4-7>,
       "visual_signature": {
-        "camera_style": "<single unified camera movement for ALL shots, e.g. 'locked-off macro — NO handheld mixing'>",
+        "camera_style": "<single unified camera movement for ALL shots, e.g. 'handheld drift with micro-shake — warm and authentic'>",
         "color_palette": "<2-3 hex codes + descriptive names, e.g. '#00B894 deep teal, #FFE082 warm straw, #FFFFFF clean white'>",
-        "lighting": "<unified lighting setup for all shots, e.g. 'harsh overhead midday sun with sharp drop shadows'>",
-        "visual_motif": "<repeating visual element that threads through all shots, e.g. 'condensation water droplets on cup exterior'>"
+        "lighting": "<unified lighting setup for all shots, e.g. 'golden-hour backlight with warm lens flare'>",
+        "visual_motif": "<repeating visual element threading all shots, e.g. 'condensation droplets on cup surface'>"
       }
     },
     { ... concept 2 ... },
@@ -50,27 +53,35 @@ Output ONLY valid JSON (no markdown fences):
   "best_index": <0-based index of the concept that best fits this brief and brand>
 }
 
-Rules:
-- Each concept must differ meaningfully in hook_angle, visual_style, and mood
-- Choose best_index based on: brand identity fit, platform context (TikTok/Reels/Shorts), brief goals
-- scene_count guides the storyboard (not a hard limit)
-- visual_signature defines the unbreakable visual language for the entire film — all shots must conform
-- camera_style must be ONE style only (no mixing); color_palette must appear in every non-text shot
+━━ MODERN HOOK ARCHETYPES — choose one per concept, all 3 must differ ━━
+- "pov-immersion"     : viewer IS the protagonist — hand reaches into frame, eyes pan toward product,
+                        first-person perspective makes viewer feel they are experiencing the moment
+- "problem-contrast"  : open on a relatable pain point (sweating in heat, exhausted, stressed),
+                        then cut to product as instant relief — contrast drives emotional payoff
+- "asmr-reveal"       : extreme sensory close-ups FIRST (ice cube dropping, liquid slow-pour, condensation
+                        forming on glass, steam rising) — product identity withheld until midpoint
+- "micro-story"       : complete 5-8 second narrative arc — stranger encounters product → curiosity →
+                        first sip → visible transformation (smile, relief, energy)
+- "social-proof"      : feels unscripted and authentic — friend films friend candid reaction,
+                        casual handheld, imperfect framing, genuine emotion
 
-CRITICAL — T2V generability constraint:
-All concepts MUST describe scenes that exist in the real physical world and can be captured by a camera.
-FORBIDDEN visual_style and camera_style patterns (these are post-production VFX, not T2V-generatable):
-- split-screen / divided frame / left-half right-half with different lighting
-- color gel lighting that divides the frame into separate zones
-- graphic overlays / halftone dots / pop-art graphic elements
-- collision dissolve / two colors crashing together / color flood / color explosion
-- wipe transitions / screen wipes / split-line animations
-- digital zoom / digital push (in-camera only, no post-zoom)
-- After Effects / motion graphics / animated text / kinetic typography
-- any effect that requires compositing two separate video layers
+━━ HOOK RULES (MANDATORY) ━━
+- First 1.5 seconds MUST create intrigue, tension, or sensory pull — NEVER open with a product shot
+- NEVER start with: product close-up, logo, brand name, generic outdoor establishing shot
+- START with: a relatable human emotion, a striking sensory detail, a surprising contrast, a question implied by action
+- Ending scene should be loop-friendly: final motion echoes or leads back into the first frame's energy
 
-ALLOWED styles: macro, lifestyle, wide, close-up, product shot, slow-motion, time-lapse,
-overhead flat-lay, handheld, steadicam, dolly, crane — anything a real camera can capture in one take.
+━━ VISUAL STYLE OPTIONS (pick cinematography that matches the hook) ━━
+Allowed: macro, ASMR-close-up, POV handheld, lifestyle candid, overhead flat-lay, slow-motion,
+push-in dolly, crane float, locked-off symmetry — anything a real camera captures in one take.
+
+━━ T2V GENERABILITY — FORBIDDEN ━━
+NEVER use: split-screen, color gel, halftone, collision dissolve, wipe transitions, digital zoom,
+After Effects, motion graphics, animated text, kinetic typography, compositing two video layers.
+
+━━ CONCEPT DIFFERENTIATION ━━
+- Each concept must differ in: hook_angle, visual_style, mood, AND cinematography approach
+- best_index: choose the concept with highest viral potential for the platform + brand fit
 """
 
 DIRECTOR_USER_TEMPLATE = """\
@@ -104,8 +115,10 @@ def run_director(state: dict[str, Any], llm_call: LLMCall) -> dict[str, Any]:
     )
 
     try:
+        t0 = time.time()
         with console.status("[cyan][director] Generating creative concepts…[/cyan]"):
             raw = llm_call(effective_director_system, user_msg)
+        logger.info("[director] llm_call: %.1fs", time.time() - t0)
         data = _parse_json(raw)
         concepts = data.get("concepts", [])
         best_idx = int(data.get("best_index", 0))
@@ -146,7 +159,7 @@ def _mock_concept(state: dict[str, Any]) -> dict[str, Any]:
 # ══════════════════════════════════════════════════════════════════════════════
 
 STORYBOARD_SYSTEM = """\
-You are an expert short-form video storyboard artist and script writer.
+You are a viral short-form video director and storyboard artist (TikTok / Reels / Shorts).
 Given a creative concept, brand kit, and brief, produce a complete video plan as valid JSON.
 
 Output ONLY a single JSON object starting with { — do NOT wrap it in an array [ ].
@@ -159,59 +172,79 @@ Schema (no markdown fences):
   "language": "<en|zh>",
   "style_tone": ["<tone>"],
   "script": {
-    "hook": "<opening line, 5-10 words, grabs attention>",
+    "hook": "<opening line — creates intrigue or asks an implicit question, 5-10 words>",
     "body": ["<line1>", "<line2>", "<line3>"],
     "cta": "<call to action, 5-10 words>"
   },
   "storyboard": [
     {
       "scene": 1,
-      "desc": "<visual description — must echo color_palette and camera_style from visual_signature>",
+      "desc": "<ACTIVE visual description — what is HAPPENING, not what is SHOWING. Use strong action verbs.>",
       "duration": <float>,
-      "asset_hint": "<macro|lifestyle|text|product>",
-      "narrative_beat": "<hook|tease|build|reveal|climax|payoff>",
-      "transition_in": "<how this shot connects from the previous one, e.g. 'opening — establish color palette' or 'match cut — continue push-in, echo teal from S1'>"
+      "asset_hint": "<macro|lifestyle|text|product|pov|asmr>",
+      "narrative_beat": "<hook|tension|contrast|tease|build|reveal|climax|payoff>",
+      "transition_in": "<specific cut technique: 'smash cut from S1 heat haze', 'match on action — hand motion continues', 'whip-pan right into product', 'jump cut — same subject, tighter frame'>"
     },
     ...
   ],
   "shot_list": [
-    {"shot_id": "S1", "type": "<macro|wide|close|text|transition>", "asset": "<asset key or 'generate'>", "text_overlay": "<text>", "duration": <float>},
+    {"shot_id": "S1", "type": "<macro|wide|close|text|transition|pov|asmr>", "asset": "<asset key or 'generate'>", "text_overlay": "<text>", "duration": <float>},
     ...
   ],
   "render_targets": ["9:16"]
 }
 
-Rules:
-- Use the creative concept's scene_count as guide; adjust based on duration and user requirements
-- Each shot duration must be between 0.5 and 2.0 seconds
-- shot_list must have one entry per storyboard scene (S1, S2, … SN)
-- Hook is always scene 1 with narrative_beat "hook"; follow the concept's hook_angle strategy
-- Match the concept's visual_style and mood throughout
-- Keep text_overlay short (max 8 words)
-- duration_sec should equal the sum of all shot durations
-- Every scene's desc MUST reflect the visual_signature: use the color_palette colors, camera_style movement, and visual_motif
-- narrative_beat must follow a coherent arc: hook → tease/build → reveal/climax → payoff
-- transition_in for scene 1 must be "opening — establish color palette and camera style"
-- transition_in for subsequent scenes must describe a specific visual link to the previous scene (color echo, subject match, motion continuation)
+━━ SCENE CONSTRUCTION RULES ━━
+- scene_count from concept is a guide; add scenes if needed for narrative flow
+- Each shot duration: 0.5–2.0 seconds (shorter = more energy; use 1.5-2.0 for emotional moments)
+- shot_list must 1-to-1 match storyboard scenes (S1, S2, … SN)
+- duration_sec = sum of all shot durations
+- narrative_beat arc: hook → tension/contrast → tease/build → reveal → climax → payoff
+- Every desc MUST use color_palette colors and camera_style from visual_signature
 
-CRITICAL — feedback / modification rules:
-- Follow the user's modification request EXACTLY and LITERALLY
-- If the user says "modify scene N" or "change scene N to X": edit that scene's desc/type/text_overlay in place
-- If the user says "add a scene between scene N and scene N+1": INSERT a new scene, renumber subsequent scenes
-- If the user says "remove scene N": DELETE that scene, renumber subsequent scenes
-- If the user says "add X to scene N": update scene N's desc to include X — do NOT insert a new scene
-- If the modification request is AMBIGUOUS or UNCLEAR, do NOT guess — output:
-  {"clarification_needed": true, "question": "<specific question to ask the user>"}
+━━ HOOK RULES (Scene 1 — MANDATORY) ━━
+- Scene 1 MUST NOT show the product. Open with: human emotion, problem, sensory detail, or surprising action
+- Hook must create immediate intrigue — viewer asks "what happens next?" within 1.5s
+- Examples by hook_angle:
+  • pov-immersion  → viewer's hand reaches into frame, sweat on skin, blurred heat haze in background
+  • problem-contrast → person fanning themselves, close-up of sweat on neck, tired expression
+  • asmr-reveal    → extreme close-up: ice cube dropped into empty glass, water droplets form in slow-mo
+  • micro-story    → stranger walking past street stall, eyes catch color of the drink, feet stop
+  • social-proof   → phone held sideways filming a friend's candid reaction to first sip
 
-CRITICAL — storyboard desc rules:
-- "desc" fields describe ONLY visual scene elements: motion, lighting, composition, colors, environment, camera angle, textures
-- NEVER mention text, captions, logos, watermarks, overlays, written words, taglines, slogans, or any on-screen graphics in desc
-- NEVER use words like: "text appears", "logo shown", "caption", "title card", "CTA", "branded graphic", "overlay", "tagline", "branded cup", "branded bottle", "branding"
-- NEVER use the word "branded" — say "product cup", "product bottle", "the drink" instead
-- Text content belongs EXCLUSIVELY in "text_overlay" fields, never in "desc"
-- An outro (type "text") is optional — only include one if the user explicitly wants a brand card
-- If included, "text" type shots must have desc describing an abstract visual background only (colors, mood, bokeh)
-- shot_list must correspond 1-to-1 with storyboard scenes — no extra shots, no missing shots
+━━ NEW SHOT TYPES ━━
+- "pov"  : first-person perspective — camera = viewer's eyes, hands visible, immersive angle
+- "asmr" : extreme sensory macro — ice dropping, liquid pouring, condensation forming, texture reveal.
+           Focus is TACTILE and AUDITORY (describe what would make sound/feel satisfying)
+
+━━ CONTRAST & TENSION (for food/beverage/lifestyle) ━━
+- Use narrative_beat "tension" or "contrast" for a before/after moment
+- Pair hot/dry/exhausted with cold/refreshing/energized in adjacent scenes
+- Smash cuts and jump cuts between "problem" and "solution" scenes create viral energy
+
+━━ TRANSITION LANGUAGE (be specific, not generic) ━━
+GOOD: "smash cut — heat shimmer fades into ice-cold condensation", "match on action — hand motion from S2 continues picking up cup", "whip-pan right into product reveal"
+BAD:  "smooth transition", "cut to next scene", "transition from previous"
+
+━━ DESC WRITING RULES (MANDATORY) ━━
+- Use strong ACTION VERBS: "hand reaches", "ice cube drops", "condensation crawls", "lips part", "eyes widen"
+- Describe MOTION first, then framing, then lighting — never a static tableau
+- Include sensory specificity: "tiny bubbles race up the side of the glass", "steam curls off the surface"
+- NEVER mention: text, captions, logos, watermarks, overlays, taglines, "branded", "branding"
+- NEVER use: "shows", "displays", "features", "presents" — these are static; use dynamic verbs
+- Text content → ONLY in text_overlay fields
+
+━━ OUTRO ━━
+- Type "text" shot is optional — include ONLY if user explicitly requests a brand card
+- If included, desc = abstract visual background only (bokeh, color wash, mood)
+
+━━ FEEDBACK / MODIFICATION RULES ━━
+- Follow modification requests EXACTLY and LITERALLY
+- "modify scene N" / "change scene N to X" → edit in place
+- "add scene between N and N+1" → INSERT, renumber
+- "remove scene N" → DELETE, renumber
+- "add X to scene N" → update desc, do NOT insert new scene
+- AMBIGUOUS request → {"clarification_needed": true, "question": "<specific question>"}
 """
 
 STORYBOARD_USER_TEMPLATE = """\
@@ -286,8 +319,10 @@ def run_storyboard(
     )
 
     try:
+        t0 = time.time()
         with console.status("[cyan][storyboard] Generating storyboard…[/cyan]"):
             raw = llm_call(STORYBOARD_SYSTEM, user_msg)
+        logger.info("[storyboard] llm_call: %.1fs", time.time() - t0)
         plan = _parse_json(raw)
         # Guard: LLM sometimes wraps the plan in a JSON array
         if isinstance(plan, list):
@@ -520,8 +555,10 @@ def run_critic(plan: dict[str, Any], llm_call: LLMCall) -> dict[str, Any]:
         storyboard_json=json.dumps(plan, ensure_ascii=False, indent=2)
     )
     try:
+        t0 = time.time()
         with console.status("[cyan][critic] QC check…[/cyan]"):
             raw = llm_call(CRITIC_SYSTEM, user_msg)
+        logger.info("[critic] qc_check: %.1fs", time.time() - t0)
         patch_ops = _parse_json(raw)
         if not isinstance(patch_ops, list):
             patch_ops = []
@@ -847,8 +884,10 @@ def run_compiler(
     )
 
     try:
+        t0 = time.time()
         with console.status("[cyan][compiler] Compiling prompts…[/cyan]"):
             raw = llm_call(COMPILER_SYSTEM, user_msg)
+        logger.info("[compiler] llm_call: %.1fs", time.time() - t0)
         prompts = _parse_json(raw)
         if not isinstance(prompts, dict):
             prompts = {}
@@ -870,6 +909,8 @@ def run_creative_pipeline(
     llm_call: LLMCall,
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, str]]:
     """Run all 4 steps. Returns (concept, plan, prompts)."""
+    t_pipeline = time.time()
+
     # If replanning from feedback, reuse existing concept if available
     existing_concept = state.get("creative_concept")
     feedback = state.get("plan_feedback", "")
@@ -880,17 +921,27 @@ def run_creative_pipeline(
         console.print("[dim][pipeline] Reusing concept for feedback replan[/dim]")
     else:
         # Fresh plan: run Director
+        t1 = time.time()
         concept = run_director(state, llm_call)
+        logger.info("[pipeline] director: %.1fs", time.time() - t1)
 
+    t2 = time.time()
     plan = run_storyboard(state, concept, project_id, llm_call)
+    logger.info("[pipeline] storyboard: %.1fs", time.time() - t2)
 
     # If storyboard signals clarification needed, surface it immediately
     if plan.get("clarification_needed"):
         return concept, plan, {}
 
+    t3 = time.time()
     plan = run_critic(plan, llm_call)
-    prompts = run_compiler(plan, concept, state, llm_call)
+    logger.info("[pipeline] critic: %.1fs", time.time() - t3)
 
+    t4 = time.time()
+    prompts = run_compiler(plan, concept, state, llm_call)
+    logger.info("[pipeline] compiler: %.1fs", time.time() - t4)
+
+    logger.info("[pipeline] total: %.1fs", time.time() - t_pipeline)
     return concept, plan, prompts
 
 
