@@ -47,6 +47,10 @@ def partial_executor(state: dict[str, Any]) -> dict[str, Any]:
             "duration": float(shot.get("duration", 3.5)),
         })
 
+    # Guard: drop any indices that exceed the current shot_list length
+    shot_count = len(updated_plan.get("shot_list", []))
+    affected_indices = [i for i in affected_indices if i < shot_count]
+
     replicate_token = os.getenv("REPLICATE_API_TOKEN")
     fal_key = os.getenv("FAL_KEY") or os.getenv("FAL_API_KEY")
     rerendered_count = 0
