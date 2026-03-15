@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import random
 import re
 import time
 from pathlib import Path
@@ -91,7 +92,8 @@ def generate_clip(
                 or "throttled" in exc_str.lower()
             )
             if is_429 and attempt < max_retries - 1:
-                wait = 15 * (attempt + 1)   # 15s → 30s → 45s → 60s → 75s
+                # Jitter prevents all parallel threads retrying simultaneously
+                wait = 15 * (attempt + 1) + random.uniform(0, 10)
                 time.sleep(wait)
                 continue
             raise
