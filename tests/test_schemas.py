@@ -11,7 +11,7 @@ class TestBrandKit:
     def test_default_construction(self):
         kit = BrandKit(brand_id="test")
         assert kit.brand_id == "test"
-        assert kit.colors.primary == "#00B894"
+        assert kit.colors.primary == "#333333"
         assert kit.subtitle_style.font_size == 38
 
     def test_serialization_round_trip(self):
