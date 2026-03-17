@@ -349,15 +349,27 @@ async def scrape_product(url: str, data_dir: Path, gemini_client: Any) -> dict[s
     # Extract dominant color from product image
     brand_primary_color = _dominant_color_from_image(image_path) if image_path else "#333333"
 
-    # Try to download logo (favicon fallback)
+    # Try to download logo — priority: Gemini-found URL → apple-touch-icon → favicon.ico
     logo_path = None
     logo_url = extracted.pop("logo_url", "") or ""
     brand_name = extracted.pop("brand_name", "") or ""
+    from urllib.parse import urlparse, urljoin
+    _parsed = urlparse(url)
+    _origin = f"{_parsed.scheme}://{_parsed.netloc}"
+    if not logo_url and html:
+        # Search <link> tags for high-quality icons (apple-touch-icon > icon > shortcut icon)
+        try:
+            from bs4 import BeautifulSoup as _BS
+            _soup = _BS(html, "html.parser")
+            for _rel in ("apple-touch-icon", "apple-touch-icon-precomposed", "icon", "shortcut icon"):
+                _tag = _soup.find("link", rel=lambda r: r and _rel in (r if isinstance(r, list) else [r]))
+                if _tag and _tag.get("href"):
+                    logo_url = urljoin(_origin, _tag["href"])
+                    break
+        except Exception:
+            pass
     if not logo_url:
-        # Try favicon from domain
-        from urllib.parse import urlparse
-        parsed = urlparse(url)
-        logo_url = f"{parsed.scheme}://{parsed.netloc}/favicon.ico"
+        logo_url = f"{_origin}/favicon.ico"
     if logo_url:
         logo_path = _download_image(logo_url, img_dir / "logos")
 

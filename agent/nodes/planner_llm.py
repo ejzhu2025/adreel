@@ -118,6 +118,12 @@ def planner_llm(state: dict[str, Any]) -> dict[str, Any]:
     if concept_images:
         plan_dict["concept_images"] = concept_images
 
+    # Preserve product_info (brand_info, logo_path, etc.) inside plan so it
+    # survives the DB round-trip and is available to modify/execute runs later.
+    product_info = state.get("product_info")
+    if product_info:
+        plan_dict["product_info"] = product_info
+
     plan_version = state.get("plan_version", 0) + 1
     messages = state.get("messages", [])
     img_note = f", {len(concept_images)} concept images" if concept_images else ""

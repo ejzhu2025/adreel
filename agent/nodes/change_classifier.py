@@ -13,11 +13,19 @@ CLASSIFIER_SYSTEM = """You are a video editing assistant. A user generated a sho
 
 Classify the modification as:
 - "global": requires full replanning — style/tone/mood change, complete script rewrite, narrative restructure, changing more than half the shots, overall color scheme overhaul
-- "local": re-render 1-3 existing shots (swap a character, change an object, fix one scene's visual)
+- "local": re-render 1-3 existing shots (swap a character, change an object, fix one scene's visual, add/change branding)
 - "add_scene": user wants to INSERT a new scene somewhere in the video (beginning, middle, or end)
 - "remove_scene": user wants to DELETE one or more specific scenes
 
-For "local", provide affected_shot_indices and shot_updates.
+For "local":
+  - Set affected_shot_indices to the 0-based indices of shots to re-render.
+  - Set shot_updates to a dict keyed by index string, each value having a "desc" field with a NEW,
+    COMPLETE visual description that incorporates the user's request.
+  - IMPORTANT: always provide a new "desc" for every affected shot — the desc is what drives the
+    re-render. If the user says a scene looks wrong, write a desc that explicitly avoids the problem
+    (e.g. if user says "not crying", write "determined expression, fierce eyes, no tears").
+    If the user wants a logo added, write "... with [brand] logo visible in top-right corner".
+
 For "add_scene", provide new_shots: a list of scenes to add, each with position ("first"|"last"|"after:<index>") and a visual desc.
 For "remove_scene", provide remove_indices: list of 0-based shot indices to delete.
 For "global", set affected_shot_indices=[], shot_updates={}.
@@ -26,8 +34,11 @@ Output ONLY valid JSON (no markdown fences):
 {
   "change_type": "global" | "local" | "add_scene" | "remove_scene",
   "reasoning": "<one sentence>",
-  "affected_shot_indices": [],
-  "shot_updates": {},
+  "affected_shot_indices": [0, 5],
+  "shot_updates": {
+    "0": {"desc": "<full new visual description for shot 0 incorporating user feedback>"},
+    "5": {"desc": "<full new visual description for shot 5 incorporating user feedback>"}
+  },
   "new_shots": [
     {"position": "last", "desc": "<full visual scene description>", "type": "lifestyle", "duration": 2.0}
   ],
