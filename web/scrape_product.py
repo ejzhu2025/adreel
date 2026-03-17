@@ -93,6 +93,8 @@ Page text (excerpt): {content['body_text'][:2000]}
 
 Output ONLY valid JSON (no markdown):
 {{
+  "brand_name": "<brand or company name only, not product name>",
+  "logo_url": "<absolute URL of brand logo or favicon if visible on page, else empty string>",
   "product_name": "<brand + product name, concise>",
   "product_category": "<e.g. skincare, food & beverage, electronics, fashion>",
   "key_features": ["<feature 1>", "<feature 2>", "<feature 3>"],
@@ -135,6 +137,32 @@ Only include actual product photo URLs (jpg/png/webp), not swatches or icons."""
             "brief": f"{content['title']}. {content['description']}",
             "language": "en",
         }
+
+
+def _dominant_color_from_image(image_path: str | None) -> str:
+    """Extract the most visually prominent non-white/non-black color from a product image."""
+    if not image_path:
+        return "#333333"
+    try:
+        from PIL import Image
+        img = Image.open(image_path).convert("RGB")
+        img.thumbnail((100, 100))
+        pixels = list(img.getdata())
+        # Filter out near-white and near-black pixels
+        filtered = [
+            p for p in pixels
+            if not (p[0] > 220 and p[1] > 220 and p[2] > 220)  # not white
+            and not (p[0] < 35 and p[1] < 35 and p[2] < 35)    # not black
+        ]
+        if not filtered:
+            return "#333333"
+        # Average the remaining pixels
+        r = sum(p[0] for p in filtered) // len(filtered)
+        g = sum(p[1] for p in filtered) // len(filtered)
+        b = sum(p[2] for p in filtered) // len(filtered)
+        return f"#{r:02x}{g:02x}{b:02x}"
+    except Exception:
+        return "#333333"
 
 
 def _download_image(image_url: str, dest_dir: Path) -> str | None:
@@ -318,9 +346,33 @@ async def scrape_product(url: str, data_dir: Path, gemini_client: Any) -> dict[s
             if vpath:
                 variant_paths.append(vpath)
 
+    # Extract dominant color from product image
+    brand_primary_color = _dominant_color_from_image(image_path) if image_path else "#333333"
+
+    # Try to download logo (favicon fallback)
+    logo_path = None
+    logo_url = extracted.pop("logo_url", "") or ""
+    brand_name = extracted.pop("brand_name", "") or ""
+    if not logo_url:
+        # Try favicon from domain
+        from urllib.parse import urlparse
+        parsed = urlparse(url)
+        logo_url = f"{parsed.scheme}://{parsed.netloc}/favicon.ico"
+    if logo_url:
+        logo_path = _download_image(logo_url, img_dir / "logos")
+
+    # Build brand_info dict
+    brand_info = {
+        "brand_name": brand_name or (extracted.get("product_name", "").split()[0] if extracted.get("product_name") else ""),
+        "primary_color": brand_primary_color,
+        "logo_path": logo_path or "",
+        "logo_url": logo_url,
+    }
+
     return {
         **extracted,
         "image_path": image_path,
         "image_url": content["image_url"],
         "variant_image_paths": variant_paths,
+        "brand_info": brand_info,
     }

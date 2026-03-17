@@ -75,7 +75,7 @@ router = APIRouter()
 
 class CreateProjectRequest(BaseModel):
     brief: str
-    brand_id: str = "tong_sui"
+    brand_id: str = ""
     title: str = ""
 
 
@@ -91,7 +91,7 @@ class FeedbackRequest(BaseModel):
 
 class PlanRequest(BaseModel):
     brief: str = ""
-    brand_id: str = "tong_sui"
+    brand_id: str = ""
     clarification_answers: dict = {}
     plan_feedback: str = ""  # non-empty → replan from existing plan
     product_info: dict = {}  # scraped selling points: key_features, emotional_hook, target_audience, etc.

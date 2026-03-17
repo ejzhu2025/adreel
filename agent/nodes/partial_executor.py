@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Any
 
 from rich.console import Console
-from rich.progress import Progress, SpinnerColumn, TextColumn
 
 console = Console()
 
@@ -70,27 +69,38 @@ def _rerender_shots(state: dict[str, Any]) -> dict[str, Any]:
         from render.ffmpeg_composer import FFmpegComposer
         fc = FFmpegComposer()
 
+        total_shots = len(updated_plan.get("shot_list", []))
+        storyboard = updated_plan.get("storyboard", [])
+        storyboard_by_shot_id = {s.get("shot_id"): s for s in storyboard if s.get("shot_id")}
+        using_replicate = not fal_key
+
+        from render.shot_renderer import render_shot
+        # Merge updated_plan into a local state copy so render_shot sees the latest plan
+        _render_state = {**state, "plan": updated_plan}
+
         def _rerender(i: int) -> tuple[int, dict]:
             shot = updated_plan["shot_list"][i]
-            scene = updated_plan["storyboard"][i] if i < len(updated_plan.get("storyboard", [])) else {}
-            desc = scene.get("desc", "cinematic product shot")
-            prompt = f"{desc}. Vertical social media video, smooth motion, vibrant colors, cinematic quality."
-            raw_path = str(work_dir / f"{shot['shot_id']}_raw.mp4")
-            clip_path = str(work_dir / f"{shot['shot_id']}.mp4")
-            duration = float(shot.get("duration", 3.5))
-            generate_clip(prompt, raw_path, duration=duration, quality=quality)
-            fc.trim_and_scale_clip(raw_path, clip_path, duration=duration)
-            return i, {"shot_id": shot["shot_id"], "clip_path": clip_path, "duration": duration}
+            clip = render_shot(
+                i=i,
+                shot=shot,
+                total_shots=total_shots,
+                work_dir=work_dir,
+                fc=fc,
+                generate_clip=generate_clip,
+                using_replicate=using_replicate,
+                state=_render_state,
+                storyboard_by_shot_id=storyboard_by_shot_id,
+            )
+            return i, clip
 
-        with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"), console=console) as prog:
-            task_id = prog.add_task(f"[cyan]Re-rendering {len(affected_indices)} shot(s)…", total=len(affected_indices))
-            with ThreadPoolExecutor(max_workers=min(4, len(affected_indices))) as pool:
-                futures = {pool.submit(_rerender, i): i for i in affected_indices}
-                for fut in as_completed(futures):
-                    i, clip = fut.result()
-                    scene_clips[i] = clip
-                    rerendered_count += 1
-                    prog.advance(task_id)
+        with ThreadPoolExecutor(max_workers=min(4, len(affected_indices))) as pool:
+            futures = {pool.submit(_rerender, i): i for i in affected_indices}
+            for fut in as_completed(futures):
+                i, clip = fut.result()
+                scene_clips[i] = clip
+                rerendered_count += 1
+                import agent.deps as _deps
+                _deps.emit({"type": "shot_progress", "done": rerendered_count, "total": len(affected_indices)})
     else:
         if not replicate_token and not fal_key:
             console.print("[yellow][partial_executor] No API token — clips unchanged[/yellow]")

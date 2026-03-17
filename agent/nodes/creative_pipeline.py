@@ -219,7 +219,7 @@ def run_director(state: dict[str, Any], llm_call: LLMCall) -> dict[str, Any]:
         product_context=product_context,
         brief=state.get("brief", ""),
         brand_name=brand_kit.get("name", brand_kit.get("brand_id", "Brand")),
-        primary_color=brand_kit.get("colors", {}).get("primary", "#00B894"),
+        primary_color=brand_kit.get("colors", {}).get("primary") or "#333333",
         outro_cta=brand_kit.get("intro_outro", {}).get("outro_cta", "Order now"),
         platform=answers.get("platform", "tiktok"),
         duration_sec=int(answers.get("duration_sec", 20)),
@@ -256,7 +256,7 @@ def _mock_concept(state: dict[str, Any]) -> dict[str, Any]:
     brief = state.get("brief", "").lower()
     is_food = any(w in brief for w in ("tong sui", "coconut", "watermelon", "drink", "food"))
     brand_kit = state.get("brand_kit", {})
-    primary_color = brand_kit.get("colors", {}).get("primary", "#00B894")
+    primary_color = brand_kit.get("colors", {}).get("primary") or "#333333"
     return {
         "id": "C1",
         "hook_angle": "sensory immersion" if is_food else "problem-solution",
@@ -297,6 +297,7 @@ Schema (no markdown fences):
   },
   "storyboard": [
     {
+      "shot_id": "S1",
       "scene": 1,
       "desc": "<ACTIVE visual description — what is HAPPENING, not what is SHOWING. Use strong action verbs.>",
       "duration": <float>,
@@ -318,6 +319,7 @@ Schema (no markdown fences):
 - scene_count from concept is a guide; add scenes if needed for narrative flow
 - Each shot duration: 0.5–2.0 seconds (shorter = more energy; use 1.5-2.0 for emotional beats)
 - shot_list must 1-to-1 match storyboard scenes (S1, S2, … SN)
+- storyboard[i].shot_id MUST equal shot_list[i].shot_id (e.g. storyboard scene 1 has shot_id "S1")
 - duration_sec = sum of all shot durations
 - narrative_beat arc: hook → tension/contrast → tease/build → reveal → climax → payoff
 - Every desc MUST apply color_palette colors and camera_style from visual_signature
@@ -443,7 +445,7 @@ def run_storyboard(
     user_msg = STORYBOARD_USER_TEMPLATE.format(
         brief=state.get("brief", ""),
         brand_name=brand_kit.get("name", brand_kit.get("brand_id", "Brand")),
-        primary_color=brand_kit.get("colors", {}).get("primary", "#00B894"),
+        primary_color=brand_kit.get("colors", {}).get("primary") or "#333333",
         outro_cta=brand_kit.get("intro_outro", {}).get("outro_cta", "Order now"),
         platform=answers.get("platform", "tiktok"),
         duration_sec=int(answers.get("duration_sec", 20)),
@@ -454,7 +456,7 @@ def run_storyboard(
         mood=concept.get("mood", "fresh"),
         scene_count=concept.get("scene_count", 4),
         vs_camera_style=vs.get("camera_style", "locked-off — no handheld"),
-        vs_color_palette=vs.get("color_palette", "#00B894 teal, #FFE082 straw, #FFFFFF white"),
+        vs_color_palette=vs.get("color_palette", "neutral warm tones, clean whites"),
         vs_lighting=vs.get("lighting", "soft natural window light"),
         vs_visual_motif=vs.get("visual_motif", "consistent product surface"),
         feedback=feedback or "None",
@@ -1007,7 +1009,7 @@ def run_compiler(
     shots = _build_cross_shot_sequence(plan)
 
     # #5: pre-translate palette hex codes → descriptive names
-    raw_palette = vs.get("color_palette", "#00B894 teal, #FFE082 straw, #FFFFFF white")
+    raw_palette = vs.get("color_palette", "neutral warm tones, clean whites")
     named_palette = _translate_palette(raw_palette)
 
     user_msg = COMPILER_USER_TEMPLATE.format(

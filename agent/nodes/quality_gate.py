@@ -117,7 +117,25 @@ def quality_gate(state: dict[str, Any]) -> dict[str, Any]:
             except Exception as exc:
                 issues.append(f"Logo file unreadable: {exc}")
 
-    # 7. Shot relevance — VLM checks each generated clip against its storyboard desc
+    # 7. Feedback compliance — LLM checks storyboard descs reflect the user's feedback
+    plan_feedback = state.get("plan_feedback", "")
+    if plan_feedback and os.getenv("ANTHROPIC_API_KEY"):
+        affected = state.get("affected_shot_indices") or list(range(len(plan.get("shot_list", []))))
+        storyboard = plan.get("storyboard", [])
+        affected_descs = {
+            f"S{i+1}": storyboard[i].get("desc", "") if i < len(storyboard) else ""
+            for i in affected
+        }
+        compliance = _check_feedback_compliance(plan_feedback, affected_descs)
+        if not compliance["satisfied"]:
+            issues.append(
+                f"User feedback not reflected in storyboard: {compliance['reason']}"
+            )
+            console.print(f"[yellow][QC] Feedback compliance FAILED: {compliance['reason']}[/yellow]")
+        else:
+            console.print(f"[green][QC] Feedback compliance ✓[/green]")
+
+    # 8. Shot relevance — VLM checks each generated clip against its storyboard desc
     scene_clips = state.get("scene_clips", [])
     plan_storyboard = plan.get("storyboard", [])
     relevance_results: list[dict] = []
@@ -313,6 +331,45 @@ def _check_shot_relevance(
             console.print(f"[dim][QC] {shot_id} relevance check error: {e}[/dim]")
 
     return results
+
+
+def _check_feedback_compliance(feedback: str, shot_descs: dict[str, str]) -> dict:
+    """LLM text-only check: did the storyboard descriptions reflect the user's feedback?
+
+    Returns {"satisfied": bool, "reason": str}.
+    Cheap: uses Haiku, no vision, ~200 input tokens.
+    """
+    try:
+        import anthropic
+        client = anthropic.Anthropic()
+    except Exception:
+        return {"satisfied": True, "reason": "skipped (no API client)"}
+
+    descs_text = "\n".join(f"  {sid}: {desc}" for sid, desc in shot_descs.items())
+    prompt = (
+        f"User feedback: \"{feedback}\"\n\n"
+        f"Updated shot descriptions:\n{descs_text}\n\n"
+        "Does the shot content described above actually implement the user's feedback request?\n"
+        "Focus on substance: if the user asked for a product showcase, does any shot description "
+        "now describe a product showcase? If the user asked to remove something, is it gone?\n\n"
+        "Reply with ONLY valid JSON (no markdown):\n"
+        "{\"satisfied\": true/false, \"reason\": \"<one sentence>\"}"
+    )
+
+    try:
+        response = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=128,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw = response.content[0].text.strip().strip("```json").strip("```").strip()
+        data = json.loads(raw)
+        return {
+            "satisfied": bool(data.get("satisfied", True)),
+            "reason": data.get("reason", ""),
+        }
+    except Exception as e:
+        return {"satisfied": True, "reason": f"skipped (parse error: {e})"}
 
 
 def _check_blank_frame(path: str) -> bool:

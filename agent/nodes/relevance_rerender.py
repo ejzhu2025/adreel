@@ -12,7 +12,6 @@ from pathlib import Path
 from typing import Any
 
 from rich.console import Console
-from rich.progress import Progress, SpinnerColumn, TextColumn
 
 console = Console()
 
@@ -126,23 +125,13 @@ def relevance_rerender(state: dict[str, Any]) -> dict[str, Any]:
                 console.print(f"[red][relevance_rerender] {shot_id} failed: {e}[/red]")
                 return shot_id, None
 
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            console=console,
-        ) as progress:
-            task_id = progress.add_task(
-                f"[cyan]Re-rendering {len(low_relevance_shots)} low-relevance shot(s)…",
-                total=len(low_relevance_shots),
-            )
-            with ThreadPoolExecutor(max_workers=min(4, len(low_relevance_shots))) as pool:
-                futures = {pool.submit(_rerender_shot, sid): sid for sid in low_relevance_shots}
-                for fut in as_completed(futures):
-                    shot_id, clip = fut.result()
-                    if clip and shot_id in clip_index:
-                        scene_clips[clip_index[shot_id]] = clip
-                        rerendered.append(shot_id)
-                    progress.advance(task_id)
+        with ThreadPoolExecutor(max_workers=min(4, len(low_relevance_shots))) as pool:
+            futures = {pool.submit(_rerender_shot, sid): sid for sid in low_relevance_shots}
+            for fut in as_completed(futures):
+                shot_id, clip = fut.result()
+                if clip and shot_id in clip_index:
+                    scene_clips[clip_index[shot_id]] = clip
+                    rerendered.append(shot_id)
 
     messages = state.get("messages", [])
     messages.append({

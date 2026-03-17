@@ -59,8 +59,8 @@ def build_ad_prompt(brand_kit: dict, brief: str = "", cta_text: str = "") -> str
     into the image — no post-compositing overlay needed.
     """
     colors = brand_kit.get("colors", {})
-    primary = colors.get("primary", "#00B894")
-    bg_color = colors.get("background", "#1A1A2E")
+    primary = colors.get("primary") or "#333333"
+    bg_color = colors.get("background") or "#111111"
     brand_name = brand_kit.get("name", "")
 
     brief_lower = brief.lower()
@@ -126,8 +126,8 @@ def generate_background(
 def build_background_prompt(brand_kit: dict, is_outro: bool = False) -> str:
     """Generate a FLUX prompt for a branded background based on brand colors."""
     colors = brand_kit.get("colors", {})
-    primary = colors.get("primary", "#00B894")
-    bg_color = colors.get("background", "#1A1A2E")
+    primary = colors.get("primary") or "#333333"
+    bg_color = colors.get("background") or "#111111"
 
     if is_outro:
         return (

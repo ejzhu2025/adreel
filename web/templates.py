@@ -25,8 +25,8 @@ _HTML = r"""<!DOCTYPE html>
   }
   * { box-sizing: border-box; }
   body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif; }
-  .sidebar { background: var(--surface); border-right: 1px solid var(--sep); }
-  .card { background: var(--surface); border: 1px solid var(--sep); border-radius: var(--radius); }
+  .sidebar { background: rgba(28,28,30,0.98); border-right: .5px solid rgba(255,255,255,.06); }
+  .card { background: rgba(28,28,30,.98); border: .5px solid rgba(255,255,255,.1); border-radius: var(--radius); backdrop-filter: blur(20px); }
   .card-hover:hover { border-color: var(--blue); cursor: pointer; }
   .btn-primary { background: var(--green); color: #000; border: none; font-weight: 600; }
   .btn-primary:hover { background: #28c250; }
@@ -70,14 +70,14 @@ _HTML = r"""<!DOCTYPE html>
     color:var(--text2); transition:all .15s; user-select:none; }
   .chip:hover { border-color:var(--blue); color:var(--text); }
   .chip.selected { background:rgba(10,132,255,.18); border-color:var(--blue); color:var(--blue); }
-  .chat-input { background:var(--surface); border:1px solid var(--sep); border-radius:var(--radius); }
-  .chat-input:focus-within { border-color:var(--blue); }
+  .chat-input { background:rgba(255,255,255,.04); border:.5px solid rgba(255,255,255,.1); border-radius:var(--radius); }
+  .chat-input:focus-within { border-color:rgba(255,255,255,.22); }
   .approve-bar { background:rgba(10,132,255,.12); border:1px solid rgba(10,132,255,.35); border-radius:var(--radius-sm); }
   /* URL import bar */
-  .url-bar { background:var(--surface2); border:1px solid var(--sep); border-radius:var(--radius); transition:border-color .2s; }
-  .url-bar:focus-within { border-color:var(--blue); }
+  .url-bar { background:rgba(255,255,255,.04); border:.5px solid rgba(255,255,255,.1); border-radius:var(--radius); transition:border-color .2s; }
+  .url-bar:focus-within { border-color:rgba(255,255,255,.25); }
   /* Product card (after scrape) */
-  .product-card { background:var(--surface2); border:1px solid var(--sep); border-radius:var(--radius); }
+  .product-card { background:rgba(255,255,255,.05); border:.5px solid rgba(255,255,255,.1); border-radius:var(--radius); }
   /* Tab bar */
   .tab-btn { color:var(--text3); transition:color .15s; }
   .tab-btn.active { color:var(--blue) !important; border-color:var(--blue) !important; }
@@ -93,12 +93,15 @@ _HTML = r"""<!DOCTYPE html>
       <span id="changelog-entries" class="flex items-center gap-4"></span>
     </div>
   </div>
-  <button onclick="document.getElementById('update-banner').remove()" class="ml-3 shrink-0 text-indigo-600 hover:text-indigo-300">✕</button>
+  <button onclick="document.getElementById('update-banner').remove()" class="ml-3 shrink-0 text-indigo-600 hover:text-indigo-300 flex items-center">
+    <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M1 1l8 8M9 1L1 9" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+  </button>
 </div>
-<header class="flex items-center justify-between px-5 py-3 border-b flex-shrink-0" style="border-color:var(--sep)">
-  <div class="flex items-center gap-2.5">
-    <span class="text-lg">🎬</span>
-    <h1 class="text-sm font-semibold tracking-tight" style="color:var(--text)">AdReel</h1>
+<header class="flex items-center justify-between px-5 py-3 flex-shrink-0" style="border-bottom:.5px solid rgba(255,255,255,.07);background:rgba(0,0,0,.85);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px)">
+  <div class="flex items-center">
+    <h1 style="font-size:15px;letter-spacing:-.04em;line-height:1">
+      <span style="font-weight:300;color:rgba(255,255,255,.4)">Ad</span><span style="font-weight:700;color:#fff">Reel</span>
+    </h1>
   </div>
   <div class="flex gap-2 items-center">
     <button onclick="newVideo()" class="btn-secondary text-xs px-3 py-1.5 rounded-md flex items-center gap-1">
@@ -132,7 +135,15 @@ _HTML = r"""<!DOCTYPE html>
 <div id="guest-gate" class="hidden fixed inset-0 z-[60] flex items-center justify-center bg-black/80">
   <div class="card w-full max-w-sm p-8 mx-4 flex flex-col gap-5">
     <div class="text-center">
-      <div class="text-3xl mb-3">🎬</div>
+      <svg width="28" height="28" viewBox="0 0 22 22" fill="none" style="margin:0 auto 12px;opacity:.6">
+        <circle cx="11" cy="11" r="10" stroke="white" stroke-width="1.5"/>
+        <circle cx="11" cy="11" r="6" stroke="white" stroke-width="1" opacity="0.45"/>
+        <circle cx="11" cy="11" r="1.8" fill="white"/>
+        <circle cx="11" cy="3.5" r="1.4" fill="white"/>
+        <circle cx="18.5" cy="11" r="1.4" fill="white"/>
+        <circle cx="11" cy="18.5" r="1.4" fill="white"/>
+        <circle cx="3.5" cy="11" r="1.4" fill="white"/>
+      </svg>
       <h2 class="text-lg font-semibold text-white mb-1">Access Required</h2>
       <p class="text-sm text-gray-400">Enter your access code to try the demo, or log in with Google.</p>
     </div>
@@ -164,7 +175,7 @@ _HTML = r"""<!DOCTYPE html>
   <div class="card w-full max-w-lg p-6 mx-4">
     <div class="flex items-center justify-between mb-4">
       <h2 class="text-base font-semibold text-white">Buy Credits</h2>
-      <button onclick="closeTopup()" class="text-gray-500 hover:text-white text-xl leading-none">✕</button>
+      <button onclick="closeTopup()" class="text-gray-500 hover:text-white flex items-center justify-center w-7 h-7 rounded-full hover:bg-gray-800 transition-colors"><svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M1 1l8 8M9 1L1 9" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></button>
     </div>
     <!-- Current video cost banner (shown when opened from 402 error) -->
     <div id="topup-cost-banner" class="hidden mb-4 rounded-lg bg-red-950/50 border border-red-800/60 px-4 py-3">
@@ -199,7 +210,7 @@ _HTML = r"""<!DOCTYPE html>
         <h2 class="text-base font-semibold text-white">Rate this video</h2>
         <p class="text-xs text-gray-400 mt-0.5">Your feedback shapes the next release · Earn up to 10 credits</p>
       </div>
-      <button onclick="closeFeedbackModal()" class="text-gray-500 hover:text-white text-xl leading-none">✕</button>
+      <button onclick="closeFeedbackModal()" class="text-gray-500 hover:text-white flex items-center justify-center w-7 h-7 rounded-full hover:bg-gray-800 transition-colors"><svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M1 1l8 8M9 1L1 9" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></button>
     </div>
 
     <!-- Overall star rating -->
@@ -251,7 +262,7 @@ _HTML = r"""<!DOCTYPE html>
   <div class="card w-full max-w-lg p-5 mx-4" style="max-height:80vh;display:flex;flex-direction:column;">
     <div class="flex items-center justify-between mb-4 flex-shrink-0">
       <h2 class="text-base font-semibold text-white">My Feedback</h2>
-      <button onclick="closeTrackerModal()" class="text-gray-500 hover:text-white text-xl leading-none">✕</button>
+      <button onclick="closeTrackerModal()" class="text-gray-500 hover:text-white flex items-center justify-center w-7 h-7 rounded-full hover:bg-gray-800 transition-colors"><svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M1 1l8 8M9 1L1 9" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></button>
     </div>
     <div id="tracker-list" class="overflow-y-auto flex-1 space-y-2 pr-1">
       <p class="text-xs text-gray-500 text-center py-4">Loading…</p>
@@ -263,14 +274,16 @@ _HTML = r"""<!DOCTYPE html>
   <div class="card w-full max-w-md p-6 mx-4">
     <div class="flex items-center justify-between mb-4">
       <h2 class="text-base font-semibold text-white">API Settings</h2>
-      <button onclick="closeSettings()" class="text-gray-500 hover:text-gray-300 text-lg leading-none">✕</button>
+      <button onclick="closeSettings()" class="text-gray-500 hover:text-white flex items-center justify-center w-7 h-7 rounded-full hover:bg-gray-800 transition-colors"><svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M1 1l8 8M9 1L1 9" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></button>
     </div>
     <div class="mb-4">
       <label class="text-sm text-gray-400 mb-2 block">Google API Key <span class="text-blue-400 text-xs font-normal">(Gemini 2.0 — primary LLM + concept images)</span></label>
       <div class="relative">
         <input id="google-key-input" type="password" class="w-full text-sm p-2.5 pr-10 font-mono"
           placeholder="AIza…" autocomplete="off"/>
-        <button onclick="toggleGoogleKeyVisibility()" class="absolute right-2.5 top-2.5 text-gray-500 hover:text-gray-300 text-sm">👁</button>
+        <button onclick="toggleGoogleKeyVisibility()" class="absolute right-2.5 top-2.5 text-gray-500 hover:text-gray-300">
+          <svg width="15" height="15" viewBox="0 0 15 15" fill="none"><path d="M7.5 3C4 3 1 7.5 1 7.5S4 12 7.5 12 14 7.5 14 7.5 11 3 7.5 3z" stroke="currentColor" stroke-width="1.2"/><circle cx="7.5" cy="7.5" r="1.8" stroke="currentColor" stroke-width="1.2"/></svg>
+        </button>
       </div>
       <p id="google-key-current" class="text-xs text-gray-600 mt-1.5"></p>
       <p class="text-xs text-gray-600 mt-1">
@@ -282,7 +295,9 @@ _HTML = r"""<!DOCTYPE html>
       <div class="relative">
         <input id="api-key-input" type="password" class="w-full text-sm p-2.5 pr-10 font-mono"
           placeholder="sk-ant-api03-…" autocomplete="off"/>
-        <button onclick="toggleKeyVisibility()" class="absolute right-2.5 top-2.5 text-gray-500 hover:text-gray-300 text-sm">👁</button>
+        <button onclick="toggleKeyVisibility()" class="absolute right-2.5 top-2.5 text-gray-500 hover:text-gray-300">
+          <svg width="15" height="15" viewBox="0 0 15 15" fill="none"><path d="M7.5 3C4 3 1 7.5 1 7.5S4 12 7.5 12 14 7.5 14 7.5 11 3 7.5 3z" stroke="currentColor" stroke-width="1.2"/><circle cx="7.5" cy="7.5" r="1.8" stroke="currentColor" stroke-width="1.2"/></svg>
+        </button>
       </div>
       <p id="api-key-current" class="text-xs text-gray-600 mt-1.5"></p>
       <p class="text-xs text-gray-600 mt-1">
@@ -294,7 +309,9 @@ _HTML = r"""<!DOCTYPE html>
       <div class="relative">
         <input id="fal-key-input" type="password" class="w-full text-sm p-2.5 pr-10 font-mono"
           placeholder="…" autocomplete="off"/>
-        <button onclick="toggleFalKeyVisibility()" class="absolute right-2.5 top-2.5 text-gray-500 hover:text-gray-300 text-sm">👁</button>
+        <button onclick="toggleFalKeyVisibility()" class="absolute right-2.5 top-2.5 text-gray-500 hover:text-gray-300">
+          <svg width="15" height="15" viewBox="0 0 15 15" fill="none"><path d="M7.5 3C4 3 1 7.5 1 7.5S4 12 7.5 12 14 7.5 14 7.5 11 3 7.5 3z" stroke="currentColor" stroke-width="1.2"/><circle cx="7.5" cy="7.5" r="1.8" stroke="currentColor" stroke-width="1.2"/></svg>
+        </button>
       </div>
       <p id="fal-key-current" class="text-xs text-gray-600 mt-1.5"></p>
       <p class="text-xs text-gray-600 mt-1">
@@ -306,7 +323,9 @@ _HTML = r"""<!DOCTYPE html>
       <div class="relative">
         <input id="replicate-token-input" type="password" class="w-full text-sm p-2.5 pr-10 font-mono"
           placeholder="r8_…" autocomplete="off"/>
-        <button onclick="toggleReplicateVisibility()" class="absolute right-2.5 top-2.5 text-gray-500 hover:text-gray-300 text-sm">👁</button>
+        <button onclick="toggleReplicateVisibility()" class="absolute right-2.5 top-2.5 text-gray-500 hover:text-gray-300">
+          <svg width="15" height="15" viewBox="0 0 15 15" fill="none"><path d="M7.5 3C4 3 1 7.5 1 7.5S4 12 7.5 12 14 7.5 14 7.5 11 3 7.5 3z" stroke="currentColor" stroke-width="1.2"/><circle cx="7.5" cy="7.5" r="1.8" stroke="currentColor" stroke-width="1.2"/></svg>
+        </button>
       </div>
       <p id="replicate-token-current" class="text-xs text-gray-600 mt-1.5"></p>
       <p class="text-xs text-gray-600 mt-1">
@@ -325,7 +344,7 @@ _HTML = r"""<!DOCTYPE html>
   <div class="card w-full max-w-md p-6 mx-4" style="max-height:90vh;overflow-y:auto">
     <div class="flex items-center justify-between mb-4">
       <h2 id="bk-modal-title" class="text-base font-semibold text-white">New Brand Kit</h2>
-      <button onclick="closeBrandKitModal()" class="text-gray-500 hover:text-gray-300 text-lg leading-none">✕</button>
+      <button onclick="closeBrandKitModal()" class="text-gray-500 hover:text-white flex items-center justify-center w-7 h-7 rounded-full hover:bg-gray-800 transition-colors"><svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M1 1l8 8M9 1L1 9" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></button>
     </div>
     <input type="hidden" id="bk-id"/>
     <!-- Name -->
@@ -340,8 +359,8 @@ _HTML = r"""<!DOCTYPE html>
         <div>
           <label class="text-xs text-gray-500 block mb-1">Primary</label>
           <div class="flex gap-1 items-center">
-            <input id="bk-color-primary" type="color" value="#00B894" class="w-8 h-8 rounded cursor-pointer border-0 p-0" style="background:none"/>
-            <input id="bk-color-primary-hex" type="text" value="#00B894" class="flex-1 text-xs p-1.5 font-mono" maxlength="7"/>
+            <input id="bk-color-primary" type="color" value="#333333" class="w-8 h-8 rounded cursor-pointer border-0 p-0" style="background:none"/>
+            <input id="bk-color-primary-hex" type="text" value="#333333" class="flex-1 text-xs p-1.5 font-mono" maxlength="7"/>
           </div>
         </div>
         <div>
@@ -361,8 +380,8 @@ _HTML = r"""<!DOCTYPE html>
         <div>
           <label class="text-xs text-gray-500 block mb-1">Background</label>
           <div class="flex gap-1 items-center">
-            <input id="bk-color-background" type="color" value="#1A1A2E" class="w-8 h-8 rounded cursor-pointer border-0 p-0" style="background:none"/>
-            <input id="bk-color-background-hex" type="text" value="#1A1A2E" class="flex-1 text-xs p-1.5 font-mono" maxlength="7"/>
+            <input id="bk-color-background" type="color" value="#111111" class="w-8 h-8 rounded cursor-pointer border-0 p-0" style="background:none"/>
+            <input id="bk-color-background-hex" type="text" value="#111111" class="flex-1 text-xs p-1.5 font-mono" maxlength="7"/>
           </div>
         </div>
       </div>
@@ -431,7 +450,7 @@ _HTML = r"""<!DOCTYPE html>
 
 <!-- Sidebar -->
 <aside class="sidebar w-56 flex-shrink-0 flex flex-col overflow-hidden">
-  <div class="p-2 border-b border-gray-800 text-xs text-gray-500 px-3 py-2 font-medium">Projects</div>
+  <div class="px-3 py-2.5 text-xs font-semibold tracking-widest uppercase" style="border-bottom:.5px solid rgba(255,255,255,.07);color:rgba(255,255,255,.25);letter-spacing:.08em">Projects</div>
   <!-- Project list -->
   <div id="project-list" class="flex-1 overflow-y-auto p-2 space-y-1" style="min-height:0">
     <p class="text-xs text-gray-500 text-center pt-4">Loading...</p>
@@ -469,7 +488,7 @@ _HTML = r"""<!DOCTYPE html>
       </div>
 
       <!-- Tab bar -->
-      <div class="flex border-b border-gray-800 px-4 flex-shrink-0">
+      <div class="flex px-4 flex-shrink-0" style="border-bottom:.5px solid rgba(255,255,255,.07)">
         <button onclick="switchTab('log')" id="tab-log"
           class="tab-btn text-xs py-2.5 px-3 border-b-2 border-blue-500 text-blue-400 font-medium">
           Agent Steps
@@ -482,9 +501,17 @@ _HTML = r"""<!DOCTYPE html>
 
       <!-- Log pane -->
       <div id="pane-log" class="flex-1 overflow-y-auto p-4">
-        <div id="agent-log-empty" class="text-center text-gray-600 py-12">
-          <div class="text-4xl mb-3">🎬</div>
-          <p class="text-sm text-gray-500">Describe your video below to get started</p>
+        <div id="agent-log-empty" class="text-center text-gray-600 py-16">
+          <svg width="32" height="32" viewBox="0 0 22 22" fill="none" style="margin:0 auto 16px;opacity:.18">
+            <circle cx="11" cy="11" r="10" stroke="white" stroke-width="1.5"/>
+            <circle cx="11" cy="11" r="6" stroke="white" stroke-width="1"/>
+            <circle cx="11" cy="11" r="1.8" fill="white"/>
+            <circle cx="11" cy="3.5" r="1.4" fill="white"/>
+            <circle cx="18.5" cy="11" r="1.4" fill="white"/>
+            <circle cx="11" cy="18.5" r="1.4" fill="white"/>
+            <circle cx="3.5" cy="11" r="1.4" fill="white"/>
+          </svg>
+          <p class="text-sm" style="color:rgba(255,255,255,.25)">Paste a product URL above to get started</p>
         </div>
         <div id="agent-log" class="space-y-3 hidden"></div>
       </div>
@@ -506,7 +533,7 @@ _HTML = r"""<!DOCTYPE html>
           </div>
           <button onclick="approveAndGenerate(selectedQuality)"
             class="btn-approve text-sm px-5 py-2 rounded-md font-medium flex items-center gap-2 flex-shrink-0">
-            <span>▶</span> Approve &amp; Generate
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2.5 1.5l8 4.5-8 4.5V1.5z" fill="currentColor"/></svg> Approve &amp; Generate
           </button>
         </div>
       </div>
@@ -516,7 +543,9 @@ _HTML = r"""<!DOCTYPE html>
 
         <!-- URL import bar -->
         <div class="url-bar flex items-center gap-2 px-3 py-2">
-          <span style="color:var(--text3)" class="text-base flex-shrink-0">🔗</span>
+          <svg style="color:var(--text3);flex-shrink:0" width="15" height="15" viewBox="0 0 15 15" fill="none" opacity=".4">
+            <path d="M6 2.5H4A2.5 2.5 0 0 0 4 7.5h1.5M9 12.5H11A2.5 2.5 0 0 0 11 7.5H9.5M5.5 7.5h4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+          </svg>
           <input id="url-input" type="url"
             class="flex-1 text-sm bg-transparent border-none outline-none"
             placeholder="Paste product link (Amazon, Shopify…)"
@@ -533,7 +562,9 @@ _HTML = r"""<!DOCTYPE html>
             <p id="product-card-name" class="text-xs font-semibold truncate" style="color:var(--text)"></p>
             <p id="product-card-features" class="text-xs mt-0.5 line-clamp-2" style="color:var(--text2)"></p>
           </div>
-          <button onclick="clearProductCard()" class="flex-shrink-0 text-lg leading-none" style="color:var(--text3)">✕</button>
+          <button onclick="clearProductCard()" class="flex-shrink-0 w-6 h-6 flex items-center justify-center rounded-full hover:bg-gray-700 transition-colors" style="color:var(--text3)">
+            <svg width="9" height="9" viewBox="0 0 9 9" fill="none"><path d="M1 1l7 7M8 1L1 8" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+          </button>
         </div>
 
         <!-- Always-visible: Aspect + Duration + Generate -->
@@ -565,7 +596,6 @@ _HTML = r"""<!DOCTYPE html>
 
           <!-- Brand kit (hidden) -->
           <select id="brand-select" class="hidden" onchange="selectedBrandId = this.value">
-            <option value="tong_sui">Tong Sui</option>
           </select>
 
           <!-- Product image preview (shown when file attached) -->
@@ -575,7 +605,9 @@ _HTML = r"""<!DOCTYPE html>
               <p class="text-xs font-medium" id="product-preview-name" style="color:var(--text)"></p>
               <p class="text-xs" style="color:var(--text3)">Product image attached</p>
             </div>
-            <button onclick="clearProductImage()" class="text-lg leading-none" style="color:var(--text3)">✕</button>
+            <button onclick="clearProductImage()" class="w-6 h-6 flex items-center justify-center rounded-full hover:bg-gray-700 transition-colors" style="color:var(--text3)">
+              <svg width="9" height="9" viewBox="0 0 9 9" fill="none"><path d="M1 1l7 7M8 1L1 8" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+            </button>
           </div>
 
           <!-- Description textarea -->
@@ -583,8 +615,10 @@ _HTML = r"""<!DOCTYPE html>
             <input id="product-file-input" type="file" accept="image/*" class="hidden" onchange="handleProductImageSelect(this)"/>
             <button id="attach-btn" onclick="document.getElementById('product-file-input').click()"
               title="Attach product image"
-              class="text-lg flex-shrink-0 self-end pb-1 transition-colors" style="color:var(--text3);line-height:1">
-              📎
+              class="flex-shrink-0 self-end pb-1.5 transition-colors hover:opacity-70" style="color:var(--text3);line-height:1">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" opacity=".5">
+                <path d="M13.5 7.5L7.5 13.5A4 4 0 0 1 2 8L8 2A2.5 2.5 0 0 1 11.5 5.5L5.5 11.5A1 1 0 0 1 4 10L9.5 4.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
             </button>
             <textarea id="chat-input" rows="2"
               class="flex-1 text-sm bg-transparent border-none outline-none resize-none"
@@ -605,9 +639,12 @@ _HTML = r"""<!DOCTYPE html>
 
     <!-- Video panel -->
     <div id="video-panel" class="w-56 flex-shrink-0 flex flex-col p-4 gap-3 overflow-y-auto">
-      <div id="video-empty" class="flex-1 flex flex-col items-center justify-center text-gray-700 gap-2">
-        <span class="text-4xl">🎞</span>
-        <p class="text-xs text-center">Output video will appear here after generation</p>
+      <div id="video-empty" class="flex-1 flex flex-col items-center justify-center gap-3">
+        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" style="opacity:.14">
+          <rect x="2" y="5" width="20" height="14" rx="2" stroke="white" stroke-width="1.4"/>
+          <path d="M9 9l6 3-6 3V9z" fill="white"/>
+        </svg>
+        <p class="text-xs text-center" style="color:rgba(255,255,255,.2)">Output will appear<br>here after generation</p>
       </div>
       <div id="video-outputs" class="hidden space-y-3"></div>
     </div>
@@ -630,7 +667,7 @@ let appState = 'idle'; // idle | planning | plan_ready | executing | done | erro
 let currentPlan = null;
 let selectedDuration = 5;
 let selectedAspect = '9:16';
-let selectedBrandId = 'tong_sui';
+let selectedBrandId = '';
 let selectedQuality = 'turbo';
 
 // ── Node metadata (user-facing labels, no LangGraph internals) ─────────────
@@ -2171,14 +2208,14 @@ function openNewBrandKitModal() {
   document.getElementById('bk-modal-title').textContent = 'New Brand Kit';
   document.getElementById('bk-id').value = '';
   document.getElementById('bk-name').value = '';
-  document.getElementById('bk-color-primary').value = '#00B894';
-  document.getElementById('bk-color-primary-hex').value = '#00B894';
+  document.getElementById('bk-color-primary').value = '#333333';
+  document.getElementById('bk-color-primary-hex').value = '#333333';
   document.getElementById('bk-color-secondary').value = '#FFFFFF';
   document.getElementById('bk-color-secondary-hex').value = '#FFFFFF';
-  document.getElementById('bk-color-accent').value = '#FF7675';
-  document.getElementById('bk-color-accent-hex').value = '#FF7675';
-  document.getElementById('bk-color-background').value = '#1A1A2E';
-  document.getElementById('bk-color-background-hex').value = '#1A1A2E';
+  document.getElementById('bk-color-accent').value = '#666666';
+  document.getElementById('bk-color-accent-hex').value = '#666666';
+  document.getElementById('bk-color-background').value = '#111111';
+  document.getElementById('bk-color-background-hex').value = '#111111';
   document.getElementById('bk-safe-area').value = 'top_right';
   document.getElementById('bk-logo-section').classList.add('hidden');
   document.getElementById('bk-logo-preview').classList.add('hidden');
