@@ -100,8 +100,14 @@ Output ONLY valid JSON (no markdown):
   "emotional_hook": "<the core emotional reason someone buys this, not a feature>",
   "style_tone": ["<one of: fresh, premium, playful, bold, serene, luxurious, energetic>"],
   "brief": "<a 2-3 sentence video brief for a TikTok/Reels ad. Focus on the emotional story, not specs.>",
-  "language": "<en or zh based on the page language>"
-}}"""
+  "language": "<en or zh based on the page language>",
+  "variant_image_urls": ["<full URL of color/variant product image 1>", "<url 2>"]
+}}
+
+For variant_image_urls: look in the schema data and page text for multiple product images representing
+different colors or variants of the same product. Return up to 6 full image URLs.
+If only one color exists, return an empty list [].
+Only include actual product photo URLs (jpg/png/webp), not swatches or icons."""
 
     try:
         response = gemini_client.models.generate_content(
@@ -299,12 +305,22 @@ async def scrape_product(url: str, data_dir: Path, gemini_client: Any) -> dict[s
         "product_category": "",
     }
 
-    # 4. Download product image
+    # 4. Download main product image
     img_dir = data_dir / "uploads"
     image_path = _download_image(content["image_url"], img_dir)
+
+    # 5. Download variant images (for color-variant outro)
+    variant_urls = extracted.pop("variant_image_urls", []) or []
+    variant_paths: list[str] = []
+    for vurl in variant_urls[:6]:  # cap at 6 variants
+        if vurl and vurl != content["image_url"]:
+            vpath = _download_image(vurl, img_dir)
+            if vpath:
+                variant_paths.append(vpath)
 
     return {
         **extracted,
         "image_path": image_path,
         "image_url": content["image_url"],
+        "variant_image_paths": variant_paths,
     }

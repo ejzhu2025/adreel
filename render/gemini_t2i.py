@@ -59,7 +59,7 @@ def generate_ad_frame(
     b64 = base64.b64encode(img_bytes).decode()
 
     response = gemini_client.models.generate_content(
-        model="gemini-2.0-flash-preview-image-generation",
+        model="gemini-2.5-flash-image",
         contents=[
             {
                 "parts": [
@@ -105,7 +105,7 @@ def generate_scene_frame(
 ) -> str:
     """Generate a scene image with the product as hero, using the product photo as reference.
 
-    Uses gemini-2.0-flash-preview-image-generation with the product image as input,
+    Uses gemini-2.5-flash-image with the product image as input,
     so the generated frame shows the exact same product (consistent shape/color/details).
     """
     from google.genai import types
@@ -118,7 +118,7 @@ def generate_scene_frame(
     prompt = build_scene_prompt(scene_desc, style_tone)
 
     response = gemini_client.models.generate_content(
-        model="gemini-2.0-flash-preview-image-generation",
+        model="gemini-2.5-flash-image",
         contents=[
             {
                 "parts": [

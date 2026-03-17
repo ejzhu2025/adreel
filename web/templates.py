@@ -991,6 +991,7 @@ function clearProductImage() {
 
 // ── Product URL import ────────────────────────────────────────────────────
 let _scrapedImagePath = null;
+let _scrapedVariantPaths = [];
 let _scrapedProductName = '';
 let _scrapedProductInfo = null;   // full scraped object: key_features, emotional_hook, etc.
 let _scrapedProductCategory = ''; // e.g. "luxury jewelry"
@@ -1044,6 +1045,7 @@ async function importProductUrl() {
 
     // Save scraped image path so it gets used as product_image_path
     _scrapedImagePath = data.image_path || null;
+    _scrapedVariantPaths = data.variant_image_paths || [];
 
     // Show product image preview bar if we have an image
     if (data.image_url) {
@@ -1233,8 +1235,9 @@ async function createAndPlan(brief) {
     } else if (_scrapedImagePath) {
       // Tell backend to use the already-downloaded scraped image
       await api('POST', `/api/projects/${currentProjectId}/product-image-path`,
-        { image_path: _scrapedImagePath }).catch(() => {});
+        { image_path: _scrapedImagePath, variant_image_paths: _scrapedVariantPaths }).catch(() => {});
       _scrapedImagePath = null;
+      _scrapedVariantPaths = [];
     }
 
     // Pass scraped product info to enrich Director LLM — only when scrape was used

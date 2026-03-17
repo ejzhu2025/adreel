@@ -61,6 +61,7 @@ class AgentState(TypedDict, total=False):
 
     # ── Assets ────────────────────────────────────────────────────────────────
     product_image_path: str             # absolute path to project-level product photo
+    variant_image_paths: list[str]      # paths to color/variant product images (for color-cycle outro)
 
     # ── Control ───────────────────────────────────────────────────────────────
     needs_replan: bool

@@ -137,6 +137,20 @@ def _serialize(obj: Any) -> Any:
             return None
 
 
+def _get_project_variant_image_paths(project_id: str) -> list[str]:
+    """Return variant image paths from variants.json if it exists."""
+    import json as _json
+    data_dir = Path(os.environ.get("VAH_DATA_DIR", "./data"))
+    manifest = data_dir / "projects" / project_id / "variants.json"
+    if manifest.exists():
+        try:
+            paths = _json.loads(manifest.read_text())
+            return [p for p in paths if Path(p).exists()]
+        except Exception:
+            pass
+    return []
+
+
 def _get_project_product_image_path(project_id: str) -> str:
     data_dir = Path(os.environ.get("VAH_DATA_DIR", "./data"))
     p = data_dir / "projects" / project_id / "product.png"
@@ -195,6 +209,9 @@ async def _run_agent(
     product_img = _get_project_product_image_path(project_id)
     if product_img:
         initial_state["product_image_path"] = product_img
+    variant_imgs = _get_project_variant_image_paths(project_id)
+    if variant_imgs:
+        initial_state["variant_image_paths"] = variant_imgs
 
     from agent.graph import build_graph
     await _run_agent_with_state(project_id, initial_state, queue, graph_fn=build_graph)
@@ -221,6 +238,10 @@ async def _run_agent_with_state(
         img_path = _get_project_product_image_path(project_id)
         if img_path:
             initial_state["product_image_path"] = img_path
+    if "variant_image_paths" not in initial_state:
+        vimgs = _get_project_variant_image_paths(project_id)
+        if vimgs:
+            initial_state["variant_image_paths"] = vimgs
     loop = asyncio.get_running_loop()
 
     def _emit(event: dict):
@@ -359,6 +380,7 @@ async def upload_project_product_image(
 
 class ProductImagePathRequest(BaseModel):
     image_path: str
+    variant_image_paths: list[str] = []
 
 @router.post("/api/projects/{project_id}/product-image-path")
 async def set_project_product_image_path(
@@ -380,7 +402,21 @@ async def set_project_product_image_path(
     proj_dir.mkdir(parents=True, exist_ok=True)
     product_path = proj_dir / "product.png"
     shutil.copy(src, product_path)
-    return {"status": "ok", "path": str(product_path)}
+
+    # Save variant image paths to a manifest file
+    variant_paths = []
+    for i, vpath in enumerate(req.variant_image_paths):
+        vsrc = Path(vpath)
+        if vsrc.exists():
+            ext = vsrc.suffix or ".jpg"
+            vdest = proj_dir / f"variant_{i}{ext}"
+            shutil.copy(vsrc, vdest)
+            variant_paths.append(str(vdest))
+    if variant_paths:
+        import json as _json
+        (proj_dir / "variants.json").write_text(_json.dumps(variant_paths))
+
+    return {"status": "ok", "path": str(product_path), "variant_count": len(variant_paths)}
 
 
 @router.get("/api/projects/{project_id}/product-image")

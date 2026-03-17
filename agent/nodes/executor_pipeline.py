@@ -69,6 +69,45 @@ def executor_pipeline(state: dict[str, Any]) -> dict[str, Any]:
                 logo_path = brand_kit.get("logo", {}).get("path", "")
                 cta_text = plan.get("script", {}).get("cta", "")
 
+                # ── Priority 0: Outro + color variants → per-variant 1s clips ────
+                # When the product has multiple color/variant images, the outro cycles
+                # through each one: [color1 1s][color2 1s]…[colorN 1s]
+                # Each variant: Gemini T2I ad poster → I2V (1s). Falls back gracefully.
+                variant_image_paths = state.get("variant_image_paths") or []
+                if is_outro and len(variant_image_paths) > 1:
+                    import sys
+                    from render.gemini_t2i import generate_ad_frame, build_ad_prompt
+                    from agent.nodes.planner_llm import get_gemini_client
+                    _gclient = get_gemini_client()
+                    ad_prompt = build_ad_prompt(brand_kit, brief=state.get("brief", ""), cta_text=cta_text)
+                    variant_clips: list[str] = []
+                    per_variant_dur = max(1.0, round(duration / len(variant_image_paths), 1))
+
+                    for vi, vpath in enumerate(variant_image_paths):
+                        if not Path(vpath).exists():
+                            continue
+                        try:
+                            # Gemini T2I → ad poster for this variant
+                            _poster = str(work_dir / f"{shot_id}_v{vi}_ad.png")
+                            if _gclient:
+                                generate_ad_frame(vpath, ad_prompt, _poster, _gclient)
+                            else:
+                                _poster = vpath  # fallback: use raw variant image directly
+                            # Static image → 1s clip (hard cut, no I2V)
+                            _vout = str(work_dir / f"{shot_id}_v{vi}.mp4")
+                            fc.image_to_clip(_poster, _vout, duration=per_variant_dur, ken_burns=False)
+                            variant_clips.append(_vout)
+                            print(f"[executor] {shot_id} variant {vi} ✓", file=sys.stderr)
+                        except Exception as e:
+                            print(f"[executor] {shot_id} variant {vi} failed ({e})", file=sys.stderr)
+
+                    if len(variant_clips) >= 2:
+                        # Hard cut between all variant clips
+                        fc.concat_clips(variant_clips, clip_path, crossfade=0.0)
+                        print(f"[executor] {shot_id}: color-variant outro ✓ ({len(variant_clips)} variants)", file=sys.stderr)
+                        return {"shot_id": shot_id, "clip_path": clip_path, "duration": duration}
+                    # fall through to standard outro if not enough variants succeeded
+
                 # ── Priority 1: Outro + product image → Gemini ad poster + I2V ──
                 # Gemini generates a polished vertical ad poster from the product photo,
                 # then I2V animates it.  Fallback chain:
