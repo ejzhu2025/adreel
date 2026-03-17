@@ -157,6 +157,22 @@ def _get_project_product_image_path(project_id: str) -> str:
     return str(p) if p.exists() else ""
 
 
+def _brand_kit_for_project(proj: dict) -> dict:
+    """Build brand_kit from scraped product_info stored on the project.
+
+    Never loads from the brand_kits DB table — that table may contain demo brands
+    (e.g. Tong Sui) that should never bleed into a different product's video.
+    Falls back to neutral defaults when product_info is missing.
+    """
+    from agent.nodes.memory_loader import _brand_kit_from_product_info
+    product_info = (proj.get("latest_plan_json") or {}).get("product_info") or {}
+    # product_info may also be stored at project level (injected at scrape time)
+    if not product_info:
+        product_info = proj.get("product_info") or {}
+    brand_info = product_info.get("brand_info") or {}
+    return _brand_kit_from_product_info(brand_info, proj.get("brief", ""))
+
+
 def _generate_project_title(project_id: str, brief: str, plan: dict) -> None:
     """Call Claude Haiku to generate a short project title and store it."""
     import anthropic
@@ -478,7 +494,8 @@ async def plan_project(
         "language": "en",
         "assets_available": "none",
     }
-    brand_kit_obj = deps.db().get_brand_kit(proj["brand_id"])
+    brand_kit_obj = None  # brand_kit derived from product_info, not DB
+    _brand_kit = _brand_kit_for_project(proj)
     existing_plan = proj.get("latest_plan_json") or {} if req.plan_feedback else {}
     initial_state: dict = {
         "project_id": project_id,
@@ -491,7 +508,7 @@ async def plan_project(
         "plan_feedback": req.plan_feedback,
         "qc_attempt": 1,
         "needs_replan": bool(req.plan_feedback),
-        "brand_kit": brand_kit_obj.model_dump() if brand_kit_obj else {},
+        "brand_kit": _brand_kit,
         "user_prefs": {},
         "similar_projects": [],
     }
@@ -554,7 +571,8 @@ async def execute_project(
         "language": plan.get("language", "en"),
         "assets_available": "none",
     }
-    brand_kit_obj = deps.db().get_brand_kit(proj["brand_id"])
+    brand_kit_obj = None  # brand_kit derived from product_info, not DB
+    _brand_kit = _brand_kit_for_project(proj)
     quality = req.quality if req.quality in ("turbo", "hd") else "turbo"
     initial_state: dict = {
         "project_id": project_id,
@@ -567,7 +585,7 @@ async def execute_project(
         "plan_version": plan.get("version", 1),
         "qc_attempt": 1,
         "needs_replan": False,
-        "brand_kit": brand_kit_obj.model_dump() if brand_kit_obj else {},
+        "brand_kit": _brand_kit,
         "user_prefs": {},
         "similar_projects": [],
         "quality": quality,
@@ -655,7 +673,8 @@ async def rerender_shot(
         "language": plan.get("language", "en"),
         "assets_available": "none",
     }
-    brand_kit_obj = deps.db().get_brand_kit(proj["brand_id"])
+    brand_kit_obj = None  # brand_kit derived from product_info, not DB
+    _brand_kit = _brand_kit_for_project(proj)
     from web.billing.credits import COSTS, get_credits
     cost_per_shot = COSTS["shot_hd"] if quality == "hd" else COSTS["shot_turbo"]
     user_id = _billing_user_id(auth_user, request)
@@ -680,7 +699,7 @@ async def rerender_shot(
         "plan_feedback": f"Re-render shot {req.shot_index + 1}",
         "qc_attempt": 1,
         "needs_replan": False,
-        "brand_kit": brand_kit_obj.model_dump() if brand_kit_obj else {},
+        "brand_kit": _brand_kit,
         "user_prefs": {},
         "similar_projects": [],
         "quality": quality,
@@ -749,7 +768,8 @@ async def modify_project(
         "language": plan.get("language", "en"),
         "assets_available": "none",
     }
-    brand_kit_obj = deps.db().get_brand_kit(proj["brand_id"])
+    brand_kit_obj = None  # brand_kit derived from product_info, not DB
+    _brand_kit = _brand_kit_for_project(proj)
     initial_state: dict = {
         "project_id": project_id,
         "brief": proj["brief"],
@@ -762,7 +782,7 @@ async def modify_project(
         "plan_feedback": req.text,
         "qc_attempt": 1,
         "needs_replan": False,
-        "brand_kit": brand_kit_obj.model_dump() if brand_kit_obj else {},
+        "brand_kit": _brand_kit,
         "user_prefs": {},
         "similar_projects": [],
         "quality": quality,
@@ -845,11 +865,12 @@ async def submit_feedback(project_id: str, req: FeedbackRequest, background_task
         "language": plan.get("language", "en"),
         "assets_available": "none",
     }
-    brand_kit_obj = deps.db().get_brand_kit(proj["brand_id"])
+    brand_kit_obj = None  # brand_kit derived from product_info, not DB
+    _brand_kit = _brand_kit_for_project(proj)
     replan_state: dict = {
         "project_id": project_id, "brief": proj["brief"],
         "brand_id": proj["brand_id"], "user_id": proj["user_id"],
-        "brand_kit": brand_kit_obj.model_dump() if brand_kit_obj else {},
+        "brand_kit": _brand_kit,
         "user_prefs": {}, "similar_projects": [],
         "plan": plan, "plan_version": plan.get("version", 1),
         "plan_feedback": req.text, "clarification_answers": answers,

@@ -68,9 +68,11 @@ def executor_pipeline(state: dict[str, Any]) -> dict[str, Any]:
         results: dict[int, dict] = {}
         total_shots = len(shot_list)
         done_shots = 0
-        # Replicate: try up to 3 concurrent; will retry on 429 automatically.
-        # fal.ai supports higher concurrency.
-        _max_workers = min(3, len(shot_list)) if _using_replicate else min(4, len(shot_list))
+        # Cap concurrency to avoid I2V rate limits.
+        # fal.ai I2V is slower and stricter on concurrent requests than T2V —
+        # running >2 concurrent I2V calls often causes timeouts or 429s.
+        # Use 2 workers max to serialize I2V-heavy workloads safely.
+        _max_workers = min(2, len(shot_list))
         with ThreadPoolExecutor(max_workers=_max_workers) as pool:
             futures = {pool.submit(_process_shot, (i, s)): i for i, s in enumerate(shot_list)}
             for fut in as_completed(futures):
