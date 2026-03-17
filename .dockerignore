@@ -1,0 +1,10 @@
+.git
+__pycache__
+*.pyc
+*.pyo
+data/
+*.db
+*.log
+.env
+node_modules
+.pytest_cache

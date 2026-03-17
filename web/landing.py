@@ -335,7 +335,7 @@ _LANDING_HTML = r"""<!DOCTYPE html>
 
     <div class="phone reveal">
       <div class="phone-shell sm">
-        <video class="phone-video" src="/demos/demo_butterfly.mp4"
+        <video class="phone-video" src="https://storage.googleapis.com/adreel-demo-videos/demo_butterfly.mp4"
           autoplay muted loop playsinline></video>
       </div>
       <p class="phone-label">Butterfly hair clip</p>
@@ -343,7 +343,7 @@ _LANDING_HTML = r"""<!DOCTYPE html>
 
     <div class="phone featured reveal reveal-d1">
       <div class="phone-shell lg">
-        <video class="phone-video" src="/demos/demo_face_cream.mp4"
+        <video class="phone-video" src="https://storage.googleapis.com/adreel-demo-videos/demo_face_cream.mp4"
           autoplay muted loop playsinline></video>
       </div>
       <p class="phone-label">Face cream launch</p>
@@ -351,7 +351,7 @@ _LANDING_HTML = r"""<!DOCTYPE html>
 
     <div class="phone reveal reveal-d2">
       <div class="phone-shell sm">
-        <video class="phone-video" src="/demos/demo_nike.mp4"
+        <video class="phone-video" src="https://storage.googleapis.com/adreel-demo-videos/demo_nike.mp4"
           autoplay muted loop playsinline></video>
       </div>
       <p class="phone-label">Nike Metcon 10</p>
