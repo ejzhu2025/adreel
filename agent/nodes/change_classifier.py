@@ -3,11 +3,8 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from typing import Any
-
-from rich.console import Console
-
-console = Console()
 
 CLASSIFIER_SYSTEM = """You are a video editing assistant. A user generated a short video and wants to modify it.
 
@@ -116,6 +113,13 @@ def change_classifier(state: dict[str, Any]) -> dict[str, Any]:
     new_shots = result.get("new_shots", [])
     remove_indices = [int(i) for i in result.get("remove_indices", [])]
 
+    print(
+        f"[change_classifier] type={change_type}, affected={affected}, "
+        f"shot_updates={list(shot_updates.keys())}, new_shots={len(new_shots)}, "
+        f"remove={remove_indices}, reason={result.get('reasoning','')}",
+        file=sys.stderr,
+    )
+
     messages = state.get("messages", [])
     messages.append({
         "role": "system",
@@ -145,8 +149,8 @@ def _call_llm(user_msg: str) -> dict | None:
             from google.genai import types
             client = genai.Client(api_key=google_key)
             combined = f"{CLASSIFIER_SYSTEM}\n\n---\n\n{user_msg}"
-            with console.status("[cyan]Classifying modification scope…[/cyan]"):
-                resp = client.models.generate_content(
+            print(f"[change_classifier] calling Gemini, feedback={user_msg[-120:]!r}", file=sys.stderr)
+            resp = client.models.generate_content(
                     model="gemini-2.0-flash",
                     contents=combined,
                     config=types.GenerateContentConfig(max_output_tokens=512, temperature=0.2),
@@ -158,7 +162,7 @@ def _call_llm(user_msg: str) -> dict | None:
                     raw = raw[4:]
             return json.loads(raw.strip())
         except Exception as e:
-            console.print(f"[yellow][change_classifier] Gemini error: {e}[/yellow]")
+            print(f"[change_classifier] Gemini error: {e}", file=sys.stderr)
 
     anthropic_key = os.getenv("ANTHROPIC_API_KEY")
     if anthropic_key:
@@ -166,8 +170,8 @@ def _call_llm(user_msg: str) -> dict | None:
             from langchain_anthropic import ChatAnthropic
             from langchain_core.messages import HumanMessage, SystemMessage
             llm = ChatAnthropic(model="claude-haiku-4-5-20251001", max_tokens=512)  # type: ignore[call-arg]
-            with console.status("[cyan]Classifying modification scope…[/cyan]"):
-                response = llm.invoke([
+            print(f"[change_classifier] calling Anthropic, feedback={user_msg[-120:]!r}", file=sys.stderr)
+            response = llm.invoke([
                     SystemMessage(content=CLASSIFIER_SYSTEM),
                     HumanMessage(content=user_msg),
                 ])
@@ -179,6 +183,6 @@ def _call_llm(user_msg: str) -> dict | None:
                     raw = raw[4:]
             return json.loads(raw.strip())
         except Exception as e:
-            console.print(f"[yellow][change_classifier] Anthropic error: {e}[/yellow]")
+            print(f"[change_classifier] Anthropic error: {e}", file=sys.stderr)
 
     return None
