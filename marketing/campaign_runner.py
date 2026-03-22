@@ -110,6 +110,7 @@ def run_campaign(
     output_base: Path | None = None,
     platforms: list[str] | None = None,
     quality: str = "turbo",
+    duration_sec: int = 8,
     tracker: Tracker | None = None,
 ) -> CampaignResult:
     """Run full pipeline for one brand lead.
@@ -185,7 +186,7 @@ def run_campaign(
         "messages": [],
         "clarification_answers": {
             "platform": "tiktok",
-            "duration_sec": 20,
+            "duration_sec": duration_sec,
             "style_tone": tone,
             "language": brand_info.get("language", "en"),
             "assets_available": "product_image" if product_image_path else "none",
