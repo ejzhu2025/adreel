@@ -16,6 +16,8 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+from web.token_tracker import log_tokens
+
 
 def _strip_fences(text: str) -> str:
     """Strip markdown code fences from LLM response."""
@@ -111,6 +113,7 @@ Rules:
             max_tokens=400,
             messages=[{"role": "user", "content": prompt}],
         )
+        log_tokens("claude-haiku-4-5-20251001", "category_mining", resp.usage)
         cats = json.loads(_strip_fences(resp.content[0].text))
         for cat in cats:
             db.upsert_feedback_category(
@@ -190,6 +193,7 @@ caption_font_size_default, t2v_negative_prompt_addendum, music_volume_db, shot_c
             max_tokens=1800,
             messages=[{"role": "user", "content": prompt}],
         )
+        log_tokens("claude-sonnet-4-6", "feedback_analysis", resp.usage)
         return json.loads(_strip_fences(resp.content[0].text))
     except Exception as exc:
         logger.error("[analysis] Report build failed: %s", exc)
@@ -248,6 +252,7 @@ Return ONLY valid JSON array, no markdown. Max 3 fixes. Only include confidence 
             max_tokens=600,
             messages=[{"role": "user", "content": prompt}],
         )
+        log_tokens("claude-haiku-4-5-20251001", "fix_generation", resp.usage)
         fixes = json.loads(_strip_fences(resp.content[0].text))
         return [f for f in fixes if isinstance(f, dict) and f.get("confidence", 0) >= 0.65]
     except Exception as exc:
@@ -296,23 +301,48 @@ def _apply_fixes(fixes: list[dict], batch_id: str, db) -> None:
 # ── Midnight scheduler (registered at startup) ────────────────────────────────
 
 async def daily_analysis_loop() -> None:
-    """Async loop: sleep until next midnight UTC, run analysis + PM insights, repeat."""
+    """Async loop: three nightly jobs running concurrently.
+      00:05 UTC — feedback analysis
+      00:10 UTC — PM insights (needs analysis results in DB)
+      07:59 UTC — token usage report to Telegram (= 23:59 PST)
+    """
     import asyncio
-    while True:
+
+    async def _sleep_until(hour: int, minute: int) -> None:
         now = datetime.now(timezone.utc)
-        next_run = (now + timedelta(days=1)).replace(hour=0, minute=5, second=0, microsecond=0)
-        await asyncio.sleep((next_run - now).total_seconds())
-        try:
-            await asyncio.to_thread(run_daily_analysis)
-        except Exception as exc:
-            logger.error("[analysis] Daily feedback analysis failed: %s", exc)
-        # Run PM insights 5 min after feedback analysis (needs analysis results in DB)
-        await asyncio.sleep(300)
-        try:
-            from ai_team.pm_insights import run as run_pm_insights
-            await asyncio.to_thread(run_pm_insights)
-        except Exception as exc:
-            logger.error("[analysis] PM insights failed: %s", exc)
+        target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if target <= now:
+            target += timedelta(days=1)
+        await asyncio.sleep((target - now).total_seconds())
+
+    async def _feedback_job():
+        while True:
+            await _sleep_until(0, 5)
+            try:
+                await asyncio.to_thread(run_daily_analysis)
+            except Exception as exc:
+                logger.error("[analysis] Daily feedback analysis failed: %s", exc)
+
+    async def _pm_insights_job():
+        while True:
+            await _sleep_until(0, 10)
+            try:
+                from ai_team.pm_insights import run as run_pm_insights
+                await asyncio.to_thread(run_pm_insights)
+            except Exception as exc:
+                logger.error("[analysis] PM insights failed: %s", exc)
+
+    async def _token_report_job():
+        """23:59 PST = 07:59 UTC next day."""
+        while True:
+            await _sleep_until(7, 59)
+            try:
+                from web.token_tracker import send_daily_token_report
+                await asyncio.to_thread(send_daily_token_report)
+            except Exception as exc:
+                logger.error("[analysis] Token report failed: %s", exc)
+
+    await asyncio.gather(_feedback_job(), _pm_insights_job(), _token_report_job())
 
 
 # ── CLI entry point ────────────────────────────────────────────────────────────

@@ -75,7 +75,7 @@ class TestPilFallbackPath:
         def fake_image_to_clip(image_path, output_path, duration, width, height, ken_burns=True):
             Path(output_path).write_bytes(b"fake_video_data")
 
-        env = {k: v for k, v in os.environ.items() if k not in ("FAL_KEY", "FAL_API_KEY")}
+        env = {k: v for k, v in os.environ.items() if k not in ("FAL_KEY", "FAL_API_KEY", "REPLICATE_API_TOKEN")}
 
         with patch.dict(os.environ, env, clear=True), \
              patch("agent.nodes.executor_pipeline.FrameGenerator") as MockFG, \

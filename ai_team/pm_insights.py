@@ -261,7 +261,13 @@ def _call_claude(signals: dict, date_str: str) -> str:
         max_tokens=1200,
         messages=[{"role": "user", "content": prompt}],
     ) as stream:
-        return stream.get_final_message().content[0].text
+        final_msg = stream.get_final_message()
+        try:
+            from web.token_tracker import log_tokens
+            log_tokens("claude-sonnet-4-6", "pm_insights", final_msg.usage)
+        except Exception:
+            pass
+        return final_msg.content[0].text
 
 
 # ── Report writer ──────────────────────────────────────────────────────────────
@@ -305,6 +311,11 @@ def _summarize_for_telegram(report_md: str, date_str: str) -> str:
             max_tokens=600,
             messages=[{"role": "user", "content": prompt}],
         )
+        try:
+            from web.token_tracker import log_tokens
+            log_tokens("claude-haiku-4-5-20251001", "telegram_summary", resp.usage)
+        except Exception:
+            pass
         return resp.content[0].text.strip()
     except Exception as exc:
         print(f"[pm_insights] Summary generation failed: {exc}")

@@ -10,6 +10,42 @@ from pathlib import Path
 from typing import Any
 
 
+_RETAILER_DOMAINS = {
+    "sephora", "amazon", "walmart", "target", "ulta", "nordstrom",
+    "macys", "bestbuy", "ebay", "etsy", "costco", "zappos", "overstock",
+}
+
+
+def _brand_name_from_domain(url: str) -> str:
+    """Derive brand name from URL domain — reliable for DTC brands."""
+    from urllib.parse import urlparse
+    domain = urlparse(url).netloc.lower().replace("www.", "").split(".")[0]
+    domain = re.sub(r"\d+$", "", domain).strip()   # strip trailing digits: stanley1913→stanley
+    return domain.title() if domain else ""
+
+
+def _is_retailer_url(url: str) -> bool:
+    from urllib.parse import urlparse
+    base = urlparse(url).netloc.lower().replace("www.", "").split(".")[0]
+    return base in _RETAILER_DOMAINS
+
+
+def _clean_brand_name(raw: str, url: str) -> str:
+    """Post-process Gemini's brand_name to return just the company name."""
+    if _is_retailer_url(url):
+        # For retailer pages: Gemini must identify the actual product brand
+        # Extract just the brand: "The X ..." → "The X", else first word
+        if not raw:
+            return ""  # can't infer from domain for retailers
+        words = raw.split()
+        if words and words[0].lower() == "the" and len(words) >= 2:
+            return f"The {words[1]}"
+        return words[0] if words else raw
+    # For DTC brand sites, domain is the canonical brand name (more reliable)
+    domain_brand = _brand_name_from_domain(url)
+    return domain_brand if domain_brand else (raw.split()[0] if raw else "")
+
+
 _HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -34,8 +70,9 @@ def _extract_page_content(html: str, url: str) -> dict[str, str]:
         )
         return (tag.get("content", "") if tag else "").strip()
 
-    # Schema.org JSON-LD
+    # Schema.org JSON-LD — also extract image URL from Product schema
     schema_text = ""
+    schema_image_url = ""
     for script in soup.find_all("script", type="application/ld+json"):
         try:
             data = json.loads(script.string or "")
@@ -44,6 +81,14 @@ def _extract_page_content(html: str, url: str) -> dict[str, str]:
                 t = item.get("@type", "")
                 if "Product" in t or "ItemPage" in t:
                     schema_text = json.dumps(item, ensure_ascii=False)[:2000]
+                    # image field can be a string, list, or dict
+                    img = item.get("image", "")
+                    if isinstance(img, list) and img:
+                        img = img[0]
+                    if isinstance(img, dict):
+                        img = img.get("url", "")
+                    if isinstance(img, str) and img.startswith("http"):
+                        schema_image_url = img.split("?")[0]  # strip query params
                     break
         except Exception:
             pass
@@ -62,6 +107,7 @@ def _extract_page_content(html: str, url: str) -> dict[str, str]:
         meta(prop="og:image")
         or meta(name="twitter:image")
         or meta(prop="og:image:url")
+        or schema_image_url  # JSON-LD Product schema image as final fallback
     )
 
     # Grab visible body text — strip scripts/styles, take first ~3000 chars
@@ -93,14 +139,14 @@ Page text (excerpt): {content['body_text'][:2000]}
 
 Output ONLY valid JSON (no markdown):
 {{
-  "brand_name": "<brand or company name only, not product name>",
+  "brand_name": "<BRAND name ONLY — single company name, NO model/product details. E.g. 'Nike' not 'Nike Air Force 1', 'Allbirds' not 'Allbirds Wool Runner', 'Gymshark' not 'Gymshark Vital Seamless'. If retailer page (Sephora/Amazon/Walmart), use the actual product brand.>",
   "logo_url": "<absolute URL of brand logo or favicon if visible on page, else empty string>",
-  "product_name": "<brand + product name, concise>",
+  "product_name": "<brand + specific product name, e.g. 'Nike Air Force 1 07', 'Allbirds Wool Runner' — should be longer and more specific than brand_name>",
   "product_category": "<e.g. skincare, food & beverage, electronics, fashion>",
   "key_features": ["<feature 1>", "<feature 2>", "<feature 3>"],
-  "target_audience": "<who buys this — age, lifestyle, values>",
+  "target_audience": "<specific: age range, gender if relevant, lifestyle, values — e.g. 'Women 25-40, fitness-focused, value sustainability'>",
   "emotional_hook": "<the core emotional reason someone buys this, not a feature>",
-  "style_tone": ["<one of: fresh, premium, playful, bold, serene, luxurious, energetic>"],
+  "style_tone": "<exactly ONE word from: fresh, premium, playful, bold, serene, luxurious, energetic — pick the single best fit>",
   "brief": "<a 2-3 sentence video brief for a TikTok/Reels ad. Focus on the emotional story, not specs.>",
   "language": "<en or zh based on the page language>",
   "variant_image_urls": ["<full URL of color/variant product image 1>", "<url 2>"]
@@ -124,7 +170,13 @@ Only include actual product photo URLs (jpg/png/webp), not swatches or icons."""
         # Strip markdown fences if present
         text = re.sub(r"^```(?:json)?\s*", "", text)
         text = re.sub(r"\s*```$", "", text)
-        return json.loads(text)
+        data = json.loads(text)
+        # Normalise style_tone to a single-element list
+        tone = data.get("style_tone", "fresh")
+        if isinstance(tone, list):
+            tone = tone[0] if tone else "fresh"
+        data["style_tone"] = [tone]
+        return data
     except Exception as e:
         # Fallback: use raw title + description as brief
         return {
@@ -159,6 +211,51 @@ def _google_image_search(query: str) -> str | None:
     except Exception:
         pass
     return None
+
+
+def _extract_images_from_markdown(text: str) -> list[str]:
+    """Pull image URLs out of Jina markdown (![alt](url) syntax)."""
+    candidates = re.findall(r'!\[.*?\]\((https?://[^\s)]+)\)', text)
+    # Keep only plausible product images; drop icons / trackers / tiny pixels
+    skip = ("icon", "logo", "favicon", "sprite", "1x1", "pixel", "badge",
+            "avatar", "svg", ".gif", "/nav/", "nav_", "navigation",
+            "banner", "marketing_tile", "header", "footer", "menu")
+    return [
+        u for u in candidates
+        if any(u.lower().endswith(ext) for ext in (".jpg", ".jpeg", ".png", ".webp"))
+        and not any(s in u.lower() for s in skip)
+    ][:10]
+
+
+def _gemini_pick_product_image(
+    candidates: list[str], product_name: str, gemini_client: Any
+) -> str | None:
+    """Ask Gemini to choose the best product-photo URL from a list of candidates."""
+    from google.genai import types as gtypes
+
+    if not candidates or not gemini_client:
+        return None
+    if len(candidates) == 1:
+        return candidates[0]
+    try:
+        numbered = "\n".join(f"{i+1}. {u}" for i, u in enumerate(candidates))
+        prompt = (
+            f"Product: {product_name}\n\n"
+            f"These image URLs were found on the product page:\n{numbered}\n\n"
+            "Which single URL is most likely the main product photo (not a logo, banner, or UI element)? "
+            "Reply with ONLY the URL, nothing else."
+        )
+        resp = gemini_client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=prompt,
+            config=gtypes.GenerateContentConfig(max_output_tokens=200, temperature=0.0),
+        )
+        url = resp.text.strip().strip('"').strip("'")
+        if url.startswith("http"):
+            return url
+    except Exception:
+        pass
+    return candidates[0]  # fall back to first candidate
 
 
 def _dominant_color_from_image(image_path: str | None) -> str:
@@ -268,6 +365,16 @@ Extract product information and output ONLY valid JSON (no markdown):
     text = re.sub(r"\s*```$", "", text)
     extracted = json.loads(text)
 
+    # Normalize style_tone and brand_name
+    raw_tone = extracted.get("style_tone", "fresh")
+    if isinstance(raw_tone, list):
+        raw_tone = raw_tone[0] if raw_tone else "fresh"
+    extracted["style_tone"] = [raw_tone]
+    brand_name = _clean_brand_name(extracted.get("brand_name", "") or "", url)
+    if not brand_name:
+        brand_name = _clean_brand_name(extracted.get("product_name", ""), url)
+    extracted["brand_name"] = brand_name
+
     return {
         **extracted,
         "image_path": str(screenshot_path),
@@ -319,88 +426,113 @@ async def _jina_fetch(url: str) -> str | None:
     return None
 
 
-async def _brand_intelligence_fallback(url: str, data_dir: Path) -> dict[str, Any]:
-    """When scraping fails, use LLM knowledge + Clearbit logo to return brand info."""
-    import anthropic
+async def _brand_intelligence_fallback(url: str, data_dir: Path, gemini_client: Any = None) -> dict[str, Any]:
+    """When scraping fails, use Gemini's knowledge + Clearbit logo to return brand info."""
+    from google.genai import types as gtypes
     from urllib.parse import urlparse
 
     domain = urlparse(url).netloc.lstrip("www.")
     brand_name_guess = domain.split(".")[0].title()
 
-    # Ask Claude Haiku what it knows about this brand
+    # Ask Gemini what it knows about this brand and specific product
     brand_raw: dict = {}
-    api_key = os.getenv("ANTHROPIC_API_KEY")
-    if api_key:
+    if gemini_client:
         try:
-            client = anthropic.Anthropic(api_key=api_key)
-            prompt = f"""A user wants a video ad for a product from: {url}
-The page couldn't be scraped. Using your knowledge of {domain}, return brand info as JSON.
+            prompt = f"""A user wants a video ad for a product. The exact product page URL is:
+{url}
+
+The page couldn't be scraped. Using your knowledge of this brand and the product details
+visible in the URL path, infer as much as possible about the specific product.
 
 Return ONLY valid JSON, no markdown:
 {{
-  "brand_name": "<brand name>",
+  "brand_name": "<BRAND name ONLY — single company name, NO model/product details. E.g. 'Nike' not 'Nike Air Force 1', 'CeraVe' not 'CeraVe Moisturizing Cream'>",
+  "product_name": "<brand + specific product name inferred from URL path, e.g. 'Nike Air Force 1 07', 'CeraVe Moisturizing Cream' — more specific than brand_name>",
   "brand_description": "<one sentence: what they sell and who it's for>",
   "product_category": "<e.g. fashion, food & beverage, beauty, electronics, activewear>",
-  "style_tone": ["<2-3 from: fresh, premium, playful, bold, serene, luxurious, energetic, minimal>"],
+  "key_features": ["<feature 1>", "<feature 2>", "<feature 3>"],
+  "target_audience": "<specific: age range, gender if relevant, lifestyle, values — e.g. 'Women 25-40, fitness-focused, value sustainability'>",
+  "style_tone": "<exactly ONE word from: fresh, premium, playful, bold, serene, luxurious, energetic>",
   "primary_color_hex": "<brand's signature color as hex>",
   "brief": "<2-3 sentence TikTok/Reels video brief, emotional story not specs>",
   "known_brand": <true if you know this brand, false if unfamiliar>
 }}"""
-            resp = client.messages.create(
-                model="claude-haiku-4-5-20251001",
-                max_tokens=500,
-                messages=[{"role": "user", "content": prompt}],
+            resp = gemini_client.models.generate_content(
+                model="gemini-2.0-flash",
+                contents=prompt,
+                config=gtypes.GenerateContentConfig(max_output_tokens=500, temperature=0.4),
             )
-            text = resp.content[0].text.strip()
+            text = resp.text.strip()
             text = re.sub(r"^```(?:json)?\s*", "", text)
             text = re.sub(r"\s*```$", "", text)
             brand_raw = json.loads(text)
         except Exception as e:
-            print(f"[scrape] Brand intelligence LLM failed: {e}")
+            print(f"[scrape] Brand intelligence (Gemini) failed: {e}")
 
-    brand_name = brand_raw.get("brand_name") or brand_name_guess
+    brand_name = _clean_brand_name(brand_raw.get("brand_name") or brand_name_guess, url)
+    product_name = brand_raw.get("product_name") or brand_name
     img_dir = data_dir / "uploads" / "logos"
 
-    # Try logo sources in order: Clearbit → Google CSE → Google Favicon
+    # Try product image first via CSE, then fall back to logo sources
+    image_url = ""
+    image_path = None
+
+    # 1. CSE: search for the specific product image
+    cse_product = _google_image_search(f"{product_name} product photo")
+    if cse_product:
+        image_path = _download_image(cse_product, img_dir)
+        if image_path:
+            image_url = cse_product
+
+    # 2. Logo: Clearbit → CSE logo → favicon
     logo_url = ""
     logo_path = None
-
     clearbit = f"https://logo.clearbit.com/{domain}"
     logo_path = _download_image(clearbit, img_dir)
     if logo_path:
         logo_url = clearbit
 
     if not logo_path:
-        cse_url = _google_image_search(f"{brand_name} logo transparent")
-        if cse_url:
-            logo_path = _download_image(cse_url, img_dir)
-            logo_url = cse_url or ""
+        cse_logo = _google_image_search(f"{brand_name} logo transparent")
+        if cse_logo:
+            logo_path = _download_image(cse_logo, img_dir)
+            logo_url = cse_logo or ""
 
     if not logo_path:
         favicon = f"https://www.google.com/s2/favicons?domain={domain}&sz=128"
         logo_path = _download_image(favicon, img_dir)
         logo_url = favicon if logo_path else ""
 
+    # Use product image as main image; fall back to logo
+    final_image_path = image_path or logo_path or ""
+    final_image_url = image_url or logo_url
+
     primary_color = brand_raw.get("primary_color_hex", "#333333")
-    brief = brand_raw.get("brief", f"Create a compelling video ad for {brand_name}.")
+    brief = brand_raw.get("brief", f"Create a compelling video ad for {product_name}.")
+
+    # Normalise style_tone to a list with exactly one element
+    raw_tone = brand_raw.get("style_tone", "fresh")
+    if isinstance(raw_tone, list):
+        raw_tone = raw_tone[0] if raw_tone else "fresh"
+    style_tone = [raw_tone]
 
     return {
         "mode": "intelligence",
         "brand_name": brand_name,
         "brand_description": brand_raw.get("brand_description", f"Products from {domain}"),
-        "product_name": brand_name,
+        "product_name": product_name,
         "product_category": brand_raw.get("product_category", "product"),
-        "style_tone": brand_raw.get("style_tone", ["fresh"]),
+        "key_features": brand_raw.get("key_features", []),
+        "target_audience": brand_raw.get("target_audience", ""),
+        "style_tone": style_tone,
         "brief": brief,
         "primary_color": primary_color,
         "logo_url": logo_url,
         "logo_path": logo_path or "",
         "known_brand": brand_raw.get("known_brand", False),
-        # Standard pipeline fields
-        "key_features": [],
         "emotional_hook": brief,
-        "image_path": logo_path or "",
-        "image_url": logo_url,
+        "image_path": final_image_path,
+        "image_url": final_image_url,
         "variant_image_paths": [],
         "brand_info": {
             "brand_name": brand_name,
@@ -409,6 +541,20 @@ Return ONLY valid JSON, no markdown:
             "logo_url": logo_url,
         },
     }
+
+
+_GARBAGE_TITLES = [
+    "access denied", "403 forbidden", "404", "not found", "error",
+    "just a moment", "attention required", "pardon our interruption",
+    "hang tight", "routing to checkout", "captcha", "enable javascript",
+    "please wait", "checking your browser",
+]
+
+
+def _is_garbage_content(content: dict) -> bool:
+    """Return True if scraped content looks like a blocked/error page."""
+    title = content.get("title", "").lower()
+    return any(m in title for m in _GARBAGE_TITLES)
 
 
 async def scrape_product(url: str, data_dir: Path, gemini_client: Any) -> dict[str, Any]:
@@ -443,13 +589,13 @@ async def scrape_product(url: str, data_dir: Path, gemini_client: Any) -> dict[s
         "image_url": "", "schema": "", "url": url,
     }
 
-    # 2. If empty (SPA / blocked), try Jina AI Reader
-    if not content["title"] and not content["body_text"]:
+    # 2. If empty OR garbage (blocked/404/anti-bot), try Jina AI Reader
+    need_jina = (not content["title"] and not content["body_text"]) or _is_garbage_content(content)
+    if need_jina:
         jina_text = await _jina_fetch(url)
         if jina_text:
-            # Extract title from first markdown heading
             first_line = jina_text.split("\n")[0].lstrip("# ").strip()
-            content = {
+            jina_content = {
                 "url": url,
                 "title": first_line[:200],
                 "description": "",
@@ -457,43 +603,69 @@ async def scrape_product(url: str, data_dir: Path, gemini_client: Any) -> dict[s
                 "schema": "",
                 "body_text": jina_text[:3000],
             }
+            # Only use Jina result if it's not also garbage
+            if not _is_garbage_content(jina_content):
+                content = jina_content
+                need_jina = False  # Jina succeeded
 
-    # 3. If still empty, try Playwright HTML fetch
-    if not content["title"] and not content["body_text"]:
+    # 3. If still empty/garbage, try Playwright HTML fetch
+    if not content["title"] and not content["body_text"] or (need_jina and _is_garbage_content(content)):
         pw_html = await _playwright_get_html(url)
         if pw_html:
-            content = _extract_page_content(pw_html, url)
+            pw_content = _extract_page_content(pw_html, url)
+            if not _is_garbage_content(pw_content):
+                content = pw_content
 
     # 4. Last resort: Playwright screenshot → Gemini Vision
-    if not content["title"] and not content["body_text"]:
+    if not content["title"] and not content["body_text"] or _is_garbage_content(content):
         if gemini_client:
             try:
                 return await _screenshot_extract(url, data_dir, gemini_client)
             except Exception:
                 pass
         # 5. Brand Intelligence fallback — LLM knowledge + logo
-        return await _brand_intelligence_fallback(url, data_dir)
+        return await _brand_intelligence_fallback(url, data_dir, gemini_client)
 
-    # 3. Gemini extraction
-    extracted = _gemini_extract(content, gemini_client) if gemini_client else {
-        "product_name": content["title"],
-        "brief": f"{content['title']}. {content['description']}",
-        "style_tone": ["fresh"],
-        "language": "en",
-        "key_features": [],
-        "target_audience": "",
-        "emotional_hook": "",
-        "product_category": "",
-    }
+    # Gemini extraction (or Brand Intelligence if no Gemini key)
+    if gemini_client:
+        extracted = _gemini_extract(content, gemini_client)
+    else:
+        # No Gemini key — use Brand Intelligence for proper extraction
+        return await _brand_intelligence_fallback(url, data_dir, gemini_client)
+
+    # Normalize style_tone to exactly one element (Gemini sometimes returns list or csv)
+    raw_tone = extracted.get("style_tone", "fresh")
+    if isinstance(raw_tone, list):
+        raw_tone = raw_tone[0] if raw_tone else "fresh"
+    if isinstance(raw_tone, str) and "," in raw_tone:
+        raw_tone = raw_tone.split(",")[0].strip()
+    extracted["style_tone"] = [raw_tone]
 
     # 4. Download main product image; fall back to Google Image Search if missing
     img_dir = data_dir / "uploads"
     image_url = content["image_url"]
-    if not image_url:
-        product_name = extracted.get("product_name", "") or content.get("title", "")
-        if product_name:
-            image_url = _google_image_search(product_name) or ""
-    image_path = _download_image(image_url, img_dir)
+    product_name = extracted.get("product_name", "") or content.get("title", "")
+
+    # Image source A: og:image from HTML (already in content["image_url"])
+    image_path = _download_image(image_url, img_dir) if image_url else None
+
+    # Image source A fallback: Google Custom Search (requires CSE API enabled)
+    if not image_path and product_name:
+        cse_url = _google_image_search(product_name)
+        if cse_url:
+            image_path = _download_image(cse_url, img_dir)
+            if image_path:
+                image_url = cse_url
+
+    # Image source B: extract from Jina markdown → Gemini picks best candidate
+    if not image_path and content.get("body_text"):
+        md_candidates = _extract_images_from_markdown(content["body_text"])
+        if md_candidates:
+            best_url = _gemini_pick_product_image(md_candidates, product_name, gemini_client)
+            if best_url:
+                image_path = _download_image(best_url, img_dir)
+                if image_path:
+                    image_url = best_url
 
     # 5. Download variant images (for color-variant outro)
     variant_urls = extracted.pop("variant_image_urls", []) or []
@@ -510,7 +682,10 @@ async def scrape_product(url: str, data_dir: Path, gemini_client: Any) -> dict[s
     # Try to download logo — priority: Gemini-found URL → apple-touch-icon → favicon.ico
     logo_path = None
     logo_url = extracted.pop("logo_url", "") or ""
-    brand_name = extracted.pop("brand_name", "") or ""
+    brand_name = _clean_brand_name(extracted.pop("brand_name", "") or "", url)
+    if not brand_name:
+        # Retailer page where Gemini left brand_name empty — derive from product_name
+        brand_name = _clean_brand_name(extracted.get("product_name", ""), url)
     from urllib.parse import urlparse, urljoin
     _parsed = urlparse(url)
     _origin = f"{_parsed.scheme}://{_parsed.netloc}"
@@ -541,6 +716,7 @@ async def scrape_product(url: str, data_dir: Path, gemini_client: Any) -> dict[s
 
     return {
         **extracted,
+        "brand_name": brand_name,
         "image_path": image_path,
         "image_url": image_url,
         "variant_image_paths": variant_paths,
