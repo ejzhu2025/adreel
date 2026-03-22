@@ -50,16 +50,26 @@ def _generate_via_replicate(prompt: str, duration: int) -> str | None:
     """Call Replicate MusicGen. Returns local MP3 path or None on failure."""
     try:
         import replicate
-        output = replicate.run(
-            _REPLICATE_MODEL,
-            input={
-                "prompt": prompt,
-                "duration": duration,
-                "model_version": "stereo-large",
-                "output_format": "mp3",
-                "normalization_strategy": "peak",
-            },
-        )
+        import signal
+
+        def _timeout_handler(signum, frame):
+            raise TimeoutError("MusicGen timed out")
+
+        signal.signal(signal.SIGALRM, _timeout_handler)
+        signal.alarm(120)  # 2 minute hard timeout
+        try:
+            output = replicate.run(
+                _REPLICATE_MODEL,
+                input={
+                    "prompt": prompt,
+                    "duration": duration,
+                    "model_version": "stereo-large",
+                    "output_format": "mp3",
+                    "normalization_strategy": "peak",
+                },
+            )
+        finally:
+            signal.alarm(0)
         # output is a URL string or file-like object
         audio_url = output if isinstance(output, str) else str(output)
 

@@ -11,8 +11,9 @@ FAL_CALL_TIMEOUT = 300  # 5 minutes
 
 # Quality presets matching T2V conventions
 _PRESETS = {
-    "turbo": {"num_frames": 33, "resolution": "480p"},
-    "hd":    {"num_frames": 65, "resolution": "720p"},
+    "turbo": {"model": "fal-ai/wan/v2.2-a14b/image-to-video", "num_frames": 33, "resolution": "480p", "api": "wan"},
+    "hd":    {"model": "fal-ai/wan/v2.2-a14b/image-to-video", "num_frames": 65, "resolution": "720p", "api": "wan"},
+    "kling": {"model": "fal-ai/kling-video/v1.6/standard/image-to-video", "duration": "5", "aspect_ratio": "9:16", "api": "kling"},
 }
 
 
@@ -29,8 +30,19 @@ def generate_clip_from_image(
     image_url = fal_client.upload_file(image_path)
 
     def _run():
+        if preset.get("api") == "kling":
+            return fal_client.run(
+                preset["model"],
+                arguments={
+                    "image_url": image_url,
+                    "prompt": motion_prompt,
+                    "duration": preset.get("duration", "5"),
+                    "aspect_ratio": preset.get("aspect_ratio", "9:16"),
+                    "cfg_scale": 0.5,
+                },
+            )
         return fal_client.run(
-            "fal-ai/wan/v2.2-a14b/image-to-video",
+            preset["model"],
             arguments={
                 "image_url": image_url,
                 "prompt": motion_prompt,
