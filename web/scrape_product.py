@@ -569,8 +569,9 @@ async def scrape_product(url: str, data_dir: Path, gemini_client: Any) -> dict[s
     """
     import httpx
 
-    # 1. Try fast httpx fetch
+    # 1. Try fast httpx fetch; retry without www. on DNS/connection failure
     html = None
+    effective_url = url
     try:
         async with httpx.AsyncClient(
             timeout=15,
@@ -581,22 +582,36 @@ async def scrape_product(url: str, data_dir: Path, gemini_client: Any) -> dict[s
             resp.raise_for_status()
             html = resp.text
     except Exception:
-        pass
+        if "://www." in url:
+            # www. subdomain may not exist (e.g. www.dinq.me has no DNS record).
+            # Strip it and use the apex domain for all subsequent pipeline steps.
+            effective_url = url.replace("://www.", "://", 1)
+            try:
+                async with httpx.AsyncClient(
+                    timeout=15,
+                    follow_redirects=True,
+                    headers=_HEADERS,
+                ) as client:
+                    resp = await client.get(effective_url)
+                    resp.raise_for_status()
+                    html = resp.text
+            except Exception:
+                pass  # apex also failed; later steps (Jina/Brand Intel) will use effective_url
 
     # Parse HTML; check if useful content extracted
-    content = _extract_page_content(html, url) if html else {
+    content = _extract_page_content(html, effective_url) if html else {
         "title": "", "body_text": "", "description": "",
-        "image_url": "", "schema": "", "url": url,
+        "image_url": "", "schema": "", "url": effective_url,
     }
 
     # 2. If empty OR garbage (blocked/404/anti-bot), try Jina AI Reader
     need_jina = (not content["title"] and not content["body_text"]) or _is_garbage_content(content)
     if need_jina:
-        jina_text = await _jina_fetch(url)
+        jina_text = await _jina_fetch(effective_url)
         if jina_text:
             first_line = jina_text.split("\n")[0].lstrip("# ").strip()
             jina_content = {
-                "url": url,
+                "url": effective_url,
                 "title": first_line[:200],
                 "description": "",
                 "image_url": "",
@@ -610,9 +625,9 @@ async def scrape_product(url: str, data_dir: Path, gemini_client: Any) -> dict[s
 
     # 3. If still empty/garbage, try Playwright HTML fetch
     if not content["title"] and not content["body_text"] or (need_jina and _is_garbage_content(content)):
-        pw_html = await _playwright_get_html(url)
+        pw_html = await _playwright_get_html(effective_url)
         if pw_html:
-            pw_content = _extract_page_content(pw_html, url)
+            pw_content = _extract_page_content(pw_html, effective_url)
             if not _is_garbage_content(pw_content):
                 content = pw_content
 
@@ -620,18 +635,18 @@ async def scrape_product(url: str, data_dir: Path, gemini_client: Any) -> dict[s
     if not content["title"] and not content["body_text"] or _is_garbage_content(content):
         if gemini_client:
             try:
-                return await _screenshot_extract(url, data_dir, gemini_client)
+                return await _screenshot_extract(effective_url, data_dir, gemini_client)
             except Exception:
                 pass
         # 5. Brand Intelligence fallback — LLM knowledge + logo
-        return await _brand_intelligence_fallback(url, data_dir, gemini_client)
+        return await _brand_intelligence_fallback(effective_url, data_dir, gemini_client)
 
     # Gemini extraction (or Brand Intelligence if no Gemini key)
     if gemini_client:
         extracted = _gemini_extract(content, gemini_client)
     else:
         # No Gemini key — use Brand Intelligence for proper extraction
-        return await _brand_intelligence_fallback(url, data_dir, gemini_client)
+        return await _brand_intelligence_fallback(effective_url, data_dir, gemini_client)
 
     # Normalize style_tone to exactly one element (Gemini sometimes returns list or csv)
     raw_tone = extracted.get("style_tone", "fresh")
@@ -682,12 +697,12 @@ async def scrape_product(url: str, data_dir: Path, gemini_client: Any) -> dict[s
     # Try to download logo — priority: Gemini-found URL → apple-touch-icon → favicon.ico
     logo_path = None
     logo_url = extracted.pop("logo_url", "") or ""
-    brand_name = _clean_brand_name(extracted.pop("brand_name", "") or "", url)
+    brand_name = _clean_brand_name(extracted.pop("brand_name", "") or "", effective_url)
     if not brand_name:
         # Retailer page where Gemini left brand_name empty — derive from product_name
-        brand_name = _clean_brand_name(extracted.get("product_name", ""), url)
+        brand_name = _clean_brand_name(extracted.get("product_name", ""), effective_url)
     from urllib.parse import urlparse, urljoin
-    _parsed = urlparse(url)
+    _parsed = urlparse(effective_url)
     _origin = f"{_parsed.scheme}://{_parsed.netloc}"
     if not logo_url and html:
         # Search <link> tags for high-quality icons (apple-touch-icon > icon > shortcut icon)
