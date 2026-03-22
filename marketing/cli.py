@@ -30,7 +30,7 @@ def new(
     url: str = typer.Option(..., "--url", "-u", help="Brand website URL"),
     size: str = typer.Option("small", "--size", "-s", help="Brand size: large / medium / small"),
     category: str = typer.Option("", "--category", "-c", help="Product category hint"),
-    quality: str = typer.Option("turbo", "--quality", "-q", help="Video quality: turbo / hd"),
+    quality: str = typer.Option("kling", "--quality", "-q", help="Video quality: turbo / hd / kling"),
     platforms: str = typer.Option("tiktok,instagram", "--platforms", "-p", help="Comma-separated platforms"),
 ):
     """Generate a full content package for one brand URL."""
@@ -69,7 +69,7 @@ def new(
 @app.command()
 def batch(
     file: str = typer.Option(..., "--file", "-f", help="CSV file with brand URLs"),
-    quality: str = typer.Option("turbo", "--quality", "-q", help="Video quality: turbo / hd"),
+    quality: str = typer.Option("kling", "--quality", "-q", help="Video quality: turbo / hd / kling"),
     platforms: str = typer.Option("tiktok,instagram", "--platforms", "-p"),
     limit: int = typer.Option(0, "--limit", "-n", help="Max brands to process (0 = all)"),
 ):
