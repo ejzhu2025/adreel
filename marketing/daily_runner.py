@@ -107,6 +107,8 @@ def run_daily(
     n: int = 10,
     platforms: list[str] | None = None,
     notify: bool = True,
+    quality: str = "hd",
+    force_replicate: bool = True,
 ) -> None:
     """Main daily job: generate n ads, notify Telegram."""
     from marketing.brand_finder import BrandLead
@@ -138,7 +140,8 @@ def run_daily(
         result = run_campaign(
             lead,
             platforms=platforms,
-            quality="turbo",
+            quality=quality,
+            force_replicate=force_replicate,
             tracker=tracker,
         )
         results.append(result)

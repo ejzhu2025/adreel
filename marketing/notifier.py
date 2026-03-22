@@ -6,6 +6,9 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+from dotenv import load_dotenv
+
+load_dotenv()
 
 _BOT_TOKEN = lambda: os.getenv("TELEGRAM_BOT_TOKEN", "")
 _CHAT_ID   = lambda: os.getenv("TELEGRAM_CHAT_ID", "")

@@ -111,6 +111,7 @@ def run_campaign(
     platforms: list[str] | None = None,
     quality: str = "turbo",
     duration_sec: int = 8,
+    force_replicate: bool = False,
     tracker: Tracker | None = None,
 ) -> CampaignResult:
     """Run full pipeline for one brand lead.
@@ -171,6 +172,11 @@ def run_campaign(
     print(f"[campaign] Generating video for '{brand_name}' (project {project_id}) ...")
     from agent.graph import build_graph
 
+    # Force Replicate by temporarily hiding FAL_KEY (marketing only, restores after)
+    _fal_backup = None
+    if force_replicate:
+        _fal_backup = os.environ.pop("FAL_KEY", None) or os.environ.pop("FAL_API_KEY", None)
+
     tone = brand_info.get("style_tone", ["fresh"])
     if isinstance(tone, str):
         tone = [tone]
@@ -209,6 +215,10 @@ def run_campaign(
             project_id, brand_name, lead.url, "", "", brand_info,
             error=f"Pipeline failed: {e}",
         )
+    finally:
+        # Restore FAL_KEY if we hid it
+        if force_replicate and _fal_backup:
+            os.environ["FAL_KEY"] = _fal_backup
 
     if not video_path or not Path(video_path).exists():
         return CampaignResult(
