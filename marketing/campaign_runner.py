@@ -109,7 +109,7 @@ def run_campaign(
     data_dir: Path | None = None,
     output_base: Path | None = None,
     platforms: list[str] | None = None,
-    quality: str = "turbo",
+    quality: str = "kling",
     duration_sec: int = 8,
     force_replicate: bool = False,
     tracker: Tracker | None = None,

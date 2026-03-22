@@ -33,17 +33,26 @@ def _sanitize_prompt(prompt: str) -> str:
         prompt = re.sub(pattern, replacement, prompt, flags=re.IGNORECASE)
     return prompt
 
-# Quality presets — both use wan/v2.2-a14b, turbo uses fewer frames for speed
+# Quality presets
 _QUALITY_PRESETS = {
     "turbo": {
         "model": os.getenv("FAL_T2V_MODEL", "fal-ai/wan/v2.2-a14b/text-to-video"),
         "num_frames": 33,   # ~2s @ 16fps — fast/cheap preview (min supported: 17)
         "resolution": "480p",
+        "api": "wan",
     },
     "hd": {
         "model": os.getenv("FAL_T2V_MODEL", "fal-ai/wan/v2.2-a14b/text-to-video"),
         "num_frames": 81,   # ~5s @ 16fps — full quality
         "resolution": "720p",
+        "api": "wan",
+    },
+    # Kling — best quality, used for marketing batch tasks (no time urgency)
+    "kling": {
+        "model": "fal-ai/kling-video/v1.6/standard/text-to-video",
+        "duration": "5",    # "5" or "10" seconds
+        "aspect_ratio": "9:16",
+        "api": "kling",
     },
 }
 
@@ -85,6 +94,17 @@ def generate_clip(
 def _call_t2v(preset: dict, prompt: str, neg: str, reraise: bool = False) -> str | None:
     """Single T2V call. Returns URL or None on content_policy_violation."""
     def _run():
+        if preset.get("api") == "kling":
+            return fal_client.run(
+                preset["model"],
+                arguments={
+                    "prompt": prompt,
+                    "negative_prompt": neg,
+                    "duration": preset.get("duration", "5"),
+                    "aspect_ratio": preset.get("aspect_ratio", "9:16"),
+                    "cfg_scale": 0.5,
+                },
+            )
         return fal_client.run(
             preset["model"],
             arguments={
