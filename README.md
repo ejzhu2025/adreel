@@ -1,64 +1,59 @@
----
-title: Video Agent Hero
-emoji: 🎬
-colorFrom: purple
-colorTo: blue
-sdk: docker
-pinned: false
----
+# AdReel
 
-# Video Agent Hero 🎬
+An **AI-powered video ad generator** for short-form social media. Paste a product URL → AI plans a storyboard → renders a polished 9:16 MP4 → exports platform-ready copy and covers for TikTok, Instagram, and 小红书.
 
-An **agentic short-form video generator** with a chat-driven two-phase pipeline:
-**Plan → Review → Generate → Modify**
+Powered by **LangGraph** + **Claude Sonnet 4.6** + **fal.ai** + **Replicate** + **Gemini** + **FFmpeg**.
 
-Powered by **LangGraph** + **Claude** + **fal.ai Wan 2.2** + **Google OAuth** + **Stripe**.
-
-🌐 **Live demo**: [ejzhu2026-video-agent-hero.hf.space](https://ejzhu2026-video-agent-hero.hf.space)
+Live at: [adreel.studio](https://adreel.studio)
 
 ---
 
 ## Features
 
-- **Chat-driven UI** — describe your video, then refine via conversation
-- **Two-phase pipeline** — see and edit the storyboard before generating
-- **Turbo → HD upgrade** — quick 480p preview first, then upgrade to 720p
-- **Smart partial re-render** — AI classifies feedback as global (full replan) or local (re-render only affected shots), saving time and cost
-- **Real-time agent steps** — watch each pipeline node run with live elapsed timers
-- **LLM auto-naming** — projects are automatically named by Claude Haiku after planning
+- **Chat-driven UI** — describe your product, refine via conversation
+- **Two-phase pipeline** — review and edit the storyboard before generating
+- **Multi-backend rendering** — fal.ai (T2V / T2I / I2V / transitions), Replicate (T2V / I2V), Gemini (T2I concept images)
+- **4-stage Creative Pipeline** — Director → Storyboard → Critic → PromptCompiler runs inside the planner
+- **Smart partial re-render** — AI classifies feedback as global (full replan) or local (affected shots only)
+- **Relevance re-render** — shots with low visual-relevance scores are automatically re-rendered
 - **Brand kit** — consistent logo, colors, fonts, subtitles across all videos
 - **Background music** — auto-generated via Replicate MusicGen, mixed to video
+- **Product image scraping** — paste any URL, Gemini extracts brand info and product image
+- **TikTok publishing** — OAuth flow to post videos directly to TikTok
+- **Marketing automation** — discover brands, generate ads, produce platform copy, track conversions
+- **AI team** — 5-agent system (PM / SDE / QA / DevOps / Data) that self-manages the service
+- **Credit system** — per-shot billing with Stripe top-up; new users get free credits
+- **Google OAuth** — one-click sign-in
 - **Memory** — past projects stored in ChromaDB for semantic retrieval
-- **Credit system** — per-shot billing with Stripe top-up; new users get 10 free credits
-- **Google OAuth** — one-click sign-in, no passwords
 
 ---
 
 ## Architecture
 
 ```
-POST /plan                POST /execute             POST /modify
-     │                         │                         │
-     ▼                         ▼                         ▼
-intent_parser          executor_pipeline         change_classifier
-memory_loader          caption_agent              ├─ local → partial_executor
-clarification_planner  layout_branding            └─ global → planner_llm
-planner_llm ◄──────    quality_gate                            │
-plan_checker (loop)    qc_diagnose                    music_mixer
-     │                 render_export              result_summarizer
-     ▼                 music_mixer                memory_writer → END
-  Plan JSON            result_summarizer
-  saved to DB          memory_writer → END
+POST /api/projects/{id}/plan        POST /api/projects/{id}/execute     POST /api/projects/{id}/modify
+           │                                       │                                  │
+           ▼                                       ▼                                  ▼
+    intent_parser                       executor_pipeline                  change_classifier
+    memory_loader                       caption_agent                      ├─ local → partial_executor
+    clarification_planner               layout_branding                    └─ global → planner_llm
+    ask_user (if fields missing)        quality_gate                                  │
+    planner_llm ◄── Creative Pipeline  qc_diagnose                        music_mixer
+    plan_checker (loop ≤3×)            relevance_rerender (low score)     result_summarizer
+           │                           render_export                      memory_writer → END
+           ▼                           music_mixer
+       Plan JSON                       result_summarizer
+       saved to DB                     memory_writer → END
 ```
 
-**LangGraph** orchestrates 4 compiled graphs:
+**LangGraph** compiles 4 graphs:
 
-| Graph | Entry → Exit | Used by |
-|-------|-------------|---------|
-| `build_plan_only_graph` | `intent_parser` → `plan_checker` → END | `/plan` |
-| `build_execute_only_graph` | `executor_pipeline` → `music_mixer` → `memory_writer` → END | `/execute` |
-| `build_partial_rerender_graph` | `change_classifier` → … → `music_mixer` → `memory_writer` → END | `/modify` |
-| `build_replan_graph` | `planner_llm` → … → `music_mixer` → `memory_writer` → END | `/feedback` |
+| Graph | Triggered by | Nodes |
+|-------|-------------|-------|
+| `build_plan_only_graph` | `POST /plan` | intent_parser → plan_checker → END |
+| `build_execute_only_graph` | `POST /execute` | executor_pipeline → render_export → memory_writer → END |
+| `build_partial_rerender_graph` | `POST /modify` | change_classifier → partial_executor or full replan → END |
+| `build_replan_graph` | `POST /feedback` | planner_llm → executor_pipeline → render_export → END |
 
 ---
 
@@ -66,28 +61,70 @@ plan_checker (loop)    qc_diagnose                    music_mixer
 
 | Node | Role | External Call |
 |------|------|--------------|
-| `intent_parser` | Extracts platform / duration hints from brief | — |
+| `intent_parser` | Extracts platform / duration / tone from brief | — |
 | `memory_loader` | Loads brand kit (SQLite) + similar projects (ChromaDB) | SQLite, ChromaDB |
-| `clarification_planner` | Detects missing fields, generates questions | — |
-| `planner_llm` | Generates 4-shot Plan JSON; includes existing plan on replan | **Claude Sonnet** |
-| `plan_checker` | Validates duration, shots, script; auto-fixes; loops ≤3× | — |
-| `executor_pipeline` | Renders each shot via T2V (parallel, 6 workers) | **fal.ai wan/v2.2-a14b** |
-| `caption_agent` | Maps script lines to shot durations → caption segments | — |
-| `layout_branding` | Concat clips + burn subtitles + add logo watermark | FFmpeg |
-| `quality_gate` | Probes resolution, duration, bitrate, frame content | FFmpeg (ffprobe) |
-| `qc_diagnose` | Root-cause analysis; routes to retry / user action / proceed | Claude (fallback) |
+| `clarification_planner` | Detects missing fields; generates clarifying questions | — |
+| `ask_user` | Collects missing fields interactively *(skipped if all known)* | — |
+| `planner_llm` | Runs 4-stage Creative Pipeline → storyboard + T2V prompts | **Claude Sonnet 4.6** |
+| `plan_checker` | Validates shot count, durations, script; auto-fixes; loops ≤3× | — |
+| `executor_pipeline` | Renders shots in parallel (6 workers) via fal.ai / Replicate | **fal.ai, Replicate** |
+| `caption_agent` | Maps script lines to timed subtitle segments | — |
+| `layout_branding` | Burns captions + brand logo onto clips | FFmpeg / PIL |
+| `quality_gate` | Checks resolution, duration, bitrate; VLM scores each shot's relevance | FFmpeg, Claude |
+| `qc_diagnose` | Root-cause analysis; routes to retry / user action / proceed | Claude |
+| `relevance_rerender` | Re-renders shots with low visual-relevance scores (up to 2 attempts) | **fal.ai, Replicate** |
 | `render_export` | Final H.264 CRF23 + AAC 128k encode | FFmpeg |
-| `music_mixer` | Infers tone from brief/mood, generates music, mixes into video | **Replicate MusicGen** |
-| `result_summarizer` | Builds human-readable summary; deducts credits | — |
+| `music_mixer` | Infers tone, generates and mixes background music track | **Replicate MusicGen** |
+| `result_summarizer` | Compiles summary; deducts credits | — |
 | `memory_writer` | Persists plan + output path + vector embedding | SQLite, ChromaDB |
-| `change_classifier` | Classifies feedback as global/local; identifies shot indices | **Claude Haiku** |
-| `partial_executor` | Re-renders only affected shots; reuses disk clips for the rest | **fal.ai wan/v2.2-a14b** |
+| `change_classifier` | Classifies feedback as global/local; identifies affected shot indices | **Claude Haiku** |
+| `partial_executor` | Re-renders only affected shots; reuses cached clips for the rest | **fal.ai, Replicate** |
+| `creative_pipeline` | Sub-pipeline: Director → Storyboard → Critic → PromptCompiler | **Claude Sonnet 4.6** |
+
+---
+
+## Creative Pipeline (inside planner_llm)
+
+```
+Brief + Brand Kit
+       │
+       ▼
+① Director          — generates 3 creative concepts, picks the strongest
+       │               (hook archetypes: pov-immersion / problem-contrast / asmr-reveal / micro-story / social-proof)
+       ▼
+② Storyboard        — expands concept into shot-by-shot plan with concept images (Gemini T2I)
+       │               (scene desc, duration, narrative beat, transition language)
+       ▼
+③ Critic            — reviews plan, patches VFX violations via JSON Patch
+       │
+       ▼
+④ PromptCompiler    — writes one optimized T2V/I2V prompt per shot
+       │
+       ▼
+   storyboard plan  +  concept_images (one per shot)  +  {shot_id: {positive, negative}} prompt dict
+```
+
+Each stage is one Claude API call (~20–30 s, ~3–4 min total).
+
+---
+
+## Render Backends
+
+| Backend | Models | Used for |
+|---------|--------|---------|
+| **fal.ai** | `wan/v2.2-a14b/text-to-video` | T2V shot rendering |
+| **fal.ai** | `flux/schnell` | T2I (product / concept images) |
+| **fal.ai** | `wan/v2.2-a14b/image-to-video` | I2V when product image available |
+| **fal.ai** | transition model | Shot transitions |
+| **Replicate** | Wan 2.2 T2V | T2V fallback |
+| **Replicate** | I2V model | I2V fallback |
+| **Gemini** | `gemini-2.0-flash` | T2I concept images per shot (storyboarding) |
+
+`shot_renderer.py` auto-selects T2I→I2V when a product image is present, otherwise T2V.
 
 ---
 
 ## State (AgentState)
-
-All nodes share a single `TypedDict` that flows through the graph:
 
 ```python
 {
@@ -95,16 +132,21 @@ All nodes share a single `TypedDict` that flows through the graph:
   "project_id": "a1b2c3d4",
   "brief": "Summer promo for Tong Sui Coconut Watermelon",
   "brand_id": "tong_sui",
+  "product_image_path": "data/projects/a1b2c3d4/product.png",  # optional
 
-  # Plan (output of planner_llm)
+  # Plan
   "plan": {
     "platform": "tiktok", "duration_sec": 10,
     "concept": { "mood": "fresh", "visual_style": "..." },
     "script": { "hook": "...", "body": [...], "cta": "..." },
-    "storyboard": [{ "scene": 1, "desc": "...", "duration": 2.5 }, ...],
-    "shot_list":  [{ "shot_id": "S1", "text_overlay": "...", "duration": 2.5 }, ...],
-    "_quality": "turbo"          # written after execute
+    "storyboard": [{ "scene": 1, "desc": "...", "duration": 2.5 }],
+    "shot_list":  [{ "shot_id": "S1", "text_overlay": "...", "duration": 2.5 }],
   },
+
+  # Creative
+  "creative_concept": { "hook_archetype": "...", "color_palette": [...] },
+  "t2v_prompts": { "S1": { "positive": "...", "negative": "..." } },
+  "concept_images": { "S1": "data/projects/.../concept_S1.png" },  # Gemini T2I
 
   # Execution
   "scene_clips": [{ "shot_id": "S1", "clip_path": "...", "duration": 2.5 }],
@@ -112,8 +154,9 @@ All nodes share a single `TypedDict` that flows through the graph:
   "output_path": "data/exports/a1b2c3d4_9x16_....mp4",
 
   # Quality
-  "quality": "turbo",            # "turbo" | "hd"
+  "quality": "turbo",              # "turbo" | "hd"
   "quality_result": { "passed": true, "issues": [] },
+  "relevance_rerender_attempt": 0, # up to 2
 
   # Partial re-render
   "change_type": "local",
@@ -122,10 +165,82 @@ All nodes share a single `TypedDict` that flows through the graph:
 
   # Control
   "needs_replan": false,
+  "needs_user_action": false,
+  "qc_user_message": null,
   "plan_version": 1,
+  "token_usage": { "input": 12400, "output": 3200 },
   "messages": [...]
 }
 ```
+
+---
+
+## Marketing Module
+
+Automates the end-to-end brand outreach pipeline.
+
+```
+marketing new --url https://allbirds.com --size medium
+      │
+      ▼
+1. brand_finder.py       BrandLead(url, size, category)
+      │
+      ▼
+2. web/scrape_product.py Gemini scrapes website → brand info (name, colors, brief, logo)
+      │
+      ▼
+3. campaign_runner.py    Creates BrandKit + project in DB → runs LangGraph pipeline
+      │
+      ▼
+4. content_packager.py   Extracts cover frames + Claude-written copy (3 platforms)
+      │
+      ▼
+5. tracker.py            Records campaign in marketing.db
+      │
+      ▼
+   marketing/output/{date}/{brand}/
+   ├── video.mp4
+   ├── cover_tiktok.jpg / cover_instagram.jpg / cover_xiaohongshu.jpg
+   ├── tiktok.txt  /  instagram.txt  /  xiaohongshu.txt
+```
+
+### Marketing CLI
+
+```bash
+python -m marketing.cli new  --url https://gymshark.com --size medium --quality turbo
+python -m marketing.cli batch --file brands.csv --limit 10
+python -m marketing.cli find  --count 10 --category fashion [--run]
+python -m marketing.cli log   --campaign proj_abc123 --platform instagram --post-id 123
+python -m marketing.cli sync  --post post_xyz456 --media-id 17896132429627826
+python -m marketing.cli report
+```
+
+---
+
+## AI Team
+
+A 5-agent autonomous team that manages adreel.studio.
+
+```bash
+python -m ai_team health       # QA + DevOps health check
+python -m ai_team weekly       # PM + Data weekly report
+python -m ai_team bug "..."    # SDE investigates and fixes
+python -m ai_team feature "..." # SDE implements
+python -m ai_team review       # Code review recent changes
+python -m ai_team deploy "..." # DevOps deploy to Cloud Run
+python -m ai_team data         # Data usage report
+python -m ai_team funnel       # Funnel analysis
+python -m ai_team test [URL]   # QA regression test
+python -m ai_team ask "..."    # Answer a codebase question
+```
+
+| Agent | Role |
+|-------|------|
+| **PM Agent** | Triage feedback, write sprint plans, weekly reports |
+| **SDE Agent** | Read/write code, fix bugs, implement features |
+| **QA Agent** | Test live API, health checks, bug reports |
+| **DevOps Agent** | Monitor Cloud Run, check logs, trigger deploys |
+| **Data Agent** | Query DB, funnel analysis, error trends |
 
 ---
 
@@ -133,13 +248,13 @@ All nodes share a single `TypedDict` that flows through the graph:
 
 | Action | Cost |
 |--------|------|
-| Turbo shot (480p) | **1 credit** |
-| HD shot (720p) | **3 credits** |
-| New user signup | **10 free credits** |
+| Turbo shot (480p, ~2 s) | 1 credit |
+| HD shot (720p, ~5 s) | 3 credits |
+| New user signup | 10 free credits |
 
 1 credit ≈ $0.10. A typical 5-shot turbo video costs **5 credits (~$0.50)**.
 
-### Credit Packages (Stripe)
+### Stripe Packages
 
 | Package | Credits | Price |
 |---------|---------|-------|
@@ -147,79 +262,80 @@ All nodes share a single `TypedDict` that flows through the graph:
 | Pro | 200 | $15 |
 | Studio | 500 | $30 |
 
-Credits are deducted after successful generation. A pre-flight check prevents generation if balance is insufficient — the Approve bar stays visible so users can top up and retry.
-
 ---
 
-## Video Quality Tiers
+## Output Spec
 
-| Tier | Model | Frames | Resolution | Clip length |
-|------|-------|--------|-----------|-------------|
-| **Turbo** | `fal-ai/wan/v2.2-a14b/text-to-video` | 33 @ 16fps | 480p | ~2s |
-| **HD** | `fal-ai/wan/v2.2-a14b/text-to-video` | 81 @ 16fps | 720p | ~5s |
-
----
-
-## UI Flow
-
-```
-idle ──[Send brief]──► planning ──[done]──► plan_ready
-                                                │
-                                    Edit storyboard cards
-                                    ⚡ Turbo / ✦ HD quality chip
-                                    ~X credits estimate shown
-                                                │
-                                    [▶ Approve & Generate]
-                                                │
-                                           executing ──[done]──► done
-                                                                   │
-                                              ⚡ Turbo preview shown
-                                              [✦ Upgrade to HD] button
-                                                                   │
-                                              [chat: "modify..."] ─┘
-                                                     smart re-render
-```
-
-Chat bar states:
-
-| State | Input placeholder | Action |
-|-------|------------------|--------|
-| `idle` / `error` | Describe your video... | Create project + plan |
-| `plan_ready` | Ask to change the plan... | Replan with feedback |
-| `done` | Modify this video... | Smart partial/global re-render |
+| Property | Value |
+|----------|-------|
+| Resolution | 1080 × 1920 (9:16 vertical) |
+| Codec | H.264 (libx264), CRF 23 |
+| Frame rate | 30 fps |
+| Audio | AAC 128 kbps |
+| Captions | Burned-in SRT, branded box style |
+| Logo | Watermark in configurable safe area |
+| Music | Mixed at −18 dB |
 
 ---
 
 ## Project Structure
 
 ```
-video-agent-hero/
+adreel/
 ├── web/
-│   ├── server.py              # FastAPI + SSE streaming + inline HTML/JS frontend
+│   ├── server.py              # FastAPI app (adreel.studio), SSE streaming, inline HTML/JS
 │   ├── auth/                  # Google OAuth (router, models, deps)
-│   └── billing/               # Stripe checkout + credit operations
+│   ├── billing/               # Stripe checkout + credit operations
+│   ├── brand_kit_api.py       # Brand kit management endpoints
+│   ├── tiktok.py              # TikTok OAuth + Content API video publishing
+│   ├── routers/
+│   │   ├── projects.py        # Project CRUD + pipeline trigger endpoints
+│   │   └── scrape.py          # POST /api/scrape-product (Gemini brand extraction)
+│   ├── feedback_api.py        # User feedback collection
+│   ├── changelog.json         # Product changelog
+│   └── templates.py           # Landing page + app HTML
 ├── agent/
 │   ├── graph.py               # 4 LangGraph compiled graphs
 │   ├── state.py               # AgentState TypedDict
 │   ├── deps.py                # DB + VectorStore singletons
-│   └── nodes/                 # 15 node functions (one file each)
+│   └── nodes/                 # 17 node functions (one file each)
 ├── render/
-│   ├── fal_t2v.py             # fal.ai T2V wrapper (turbo/hd quality tiers)
-│   ├── ffmpeg_composer.py     # concat, subtitles, watermark, trim/scale, music mix
+│   ├── fal_t2v.py             # fal.ai T2V wrapper
+│   ├── fal_t2i.py             # fal.ai T2I (flux/schnell)
+│   ├── fal_i2v.py             # fal.ai I2V
+│   ├── fal_transition.py      # fal.ai shot transitions
+│   ├── replicate_t2v.py       # Replicate T2V fallback
+│   ├── replicate_i2v.py       # Replicate I2V fallback
+│   ├── gemini_t2i.py          # Gemini T2I (concept images)
+│   ├── shot_renderer.py       # Orchestrates T2I→I2V or T2V per shot
+│   ├── ffmpeg_composer.py     # Concat, subtitles, watermark, music mix
 │   ├── caption_renderer.py    # SRT/ASS subtitle file writer
 │   └── frame_generator.py     # PIL placeholder frames (no-key fallback)
+├── marketing/
+│   ├── brand_finder.py        # Product Hunt / CSV brand discovery
+│   ├── campaign_runner.py     # End-to-end campaign orchestration
+│   ├── content_packager.py    # Cover extraction + Claude copy generation
+│   ├── tracker.py             # Campaign + post tracking (SQLite)
+│   ├── notifier.py            # Telegram notifications
+│   └── daily_runner.py        # Scheduled daily pipeline
+├── ai_team/
+│   ├── orchestrator.py        # CLI entry point — routes to agents
+│   ├── pm_agent.py
+│   ├── sde_agent.py
+│   ├── qa_agent.py
+│   ├── devops_agent.py
+│   ├── data_agent.py
+│   ├── base_agent.py          # Anthropic SDK agentic tool-use loop
+│   └── tools.py               # All tool implementations + definitions
+├── eval/                      # Video quality evaluation (6 metrics)
 ├── memory/
-│   ├── db.py                  # SQLite (projects, brand_kits, user_prefs, feedback)
+│   ├── db.py                  # SQLite (projects, brand_kits, users, billing)
 │   ├── vector_store.py        # ChromaDB semantic search
 │   └── schemas.py             # Pydantic v2 models
 ├── cli/main.py                # Typer CLI (vah init/new/run/feedback/demo)
-├── assets/                    # Brand assets (auto-generated on startup)
-├── data/                      # Runtime data — gitignored
-│   ├── vah.db                 # SQLite (projects + users + billing)
-│   ├── chroma/                # ChromaDB
-│   ├── projects/{id}/clips/   # Per-shot MP4s (reused on partial re-render)
-│   └── exports/               # Final deliverable MP4s
-├── Dockerfile                 # HuggingFace Spaces deployment
+├── assets/                    # Brand assets (logo, favicon)
+├── Dockerfile                 # Cloud Run container
+├── cloudbuild.yaml            # Cloud Build CI/CD
 └── requirements.txt
 ```
 
@@ -238,28 +354,34 @@ python3.11 -m venv .venv && source .venv/bin/activate
 ### Install & Run
 
 ```bash
-git clone https://github.com/ejzhu2025/video-agent-hero
-cd video-agent-hero
+git clone https://github.com/ejzhu2025/adreel
+cd adreel
 pip install -r requirements.txt
-uvicorn web.server:app --host 0.0.0.0 --port 7860 --reload
-# Open http://localhost:7860
+cp .env.example .env       # fill in keys
+uvicorn web.server:app --host 0.0.0.0 --port 8080 --reload
+# Open http://localhost:8080
 ```
 
 ### Environment Variables
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `ANTHROPIC_API_KEY` | For AI planning | Claude Sonnet planner + Haiku classifier/namer |
-| `FAL_KEY` | For video generation | fal.ai Wan 2.2 T2V |
-| `GOOGLE_CLIENT_ID` | For auth | Google OAuth app client ID |
-| `GOOGLE_CLIENT_SECRET` | For auth | Google OAuth app client secret |
-| `STRIPE_SECRET_KEY` | For billing | Stripe API secret key |
+| `ANTHROPIC_API_KEY` | Yes | Claude Sonnet 4.6 (planning, QC, classification) |
+| `FAL_KEY` | For video gen | fal.ai T2V / T2I / I2V |
+| `REPLICATE_API_TOKEN` | For video gen | Replicate T2V / I2V + MusicGen |
+| `GOOGLE_API_KEY` | For storyboarding | Gemini T2I concept images + brand scraping |
+| `GOOGLE_CLIENT_ID` | For auth | Google OAuth client ID |
+| `GOOGLE_CLIENT_SECRET` | For auth | Google OAuth client secret |
+| `STRIPE_SECRET_KEY` | For billing | Stripe API secret |
 | `STRIPE_WEBHOOK_SECRET` | For billing | Stripe webhook signing secret |
-| `REPLICATE_API_TOKEN` | Optional | Replicate MusicGen background music |
+| `PRODUCT_HUNT_TOKEN` | Marketing only | Brand discovery from Product Hunt |
+| `INSTAGRAM_ACCESS_TOKEN` | Marketing only | Instagram Graph API analytics |
+| `TELEGRAM_BOT_TOKEN` | Optional | PM insights daily Telegram notifications |
+| `REDIS_URL` | Optional | Redis for state (falls back to in-memory dict) |
 | `VAH_DATA_DIR` | Optional | Data directory (default: `./data`) |
 | `SESSION_SECRET` | Optional | Cookie signing secret (auto-generated if unset) |
 
-Without `ANTHROPIC_API_KEY` / `FAL_KEY`: mock planner + PIL placeholder frames (useful for UI development).
+Without `ANTHROPIC_API_KEY` / `FAL_KEY`: mock planner + PIL placeholder frames (UI development mode).
 
 ---
 
@@ -268,7 +390,7 @@ Without `ANTHROPIC_API_KEY` / `FAL_KEY`: mock planner + PIL placeholder frames (
 ```bash
 pip install -e .   # installs `vah` command
 
-vah init           # seed DB with Tong Sui brand kit
+vah init           # seed DB with Tong Sui demo brand kit
 vah new --brief "..." [--brand X] [--user Y]
 vah run --project ID [--yes]
 vah feedback --project ID --text "..."
@@ -278,33 +400,24 @@ vah demo           # full end-to-end Tong Sui demo
 
 ---
 
-## Output Spec
+## Deployment (Google Cloud Run)
 
-| Property | Value |
-|----------|-------|
-| Resolution | 1080 × 1920 (9:16 vertical) |
-| Codec | H.264 (libx264), CRF 23 |
-| Frame rate | 30 fps |
-| Audio | AAC 128kbps |
-| Captions | Burned-in SRT, branded box style |
-| Logo | Watermark in configurable safe area |
-| Music | Mixed at −18 dB under original audio |
+```bash
+# Manual deploy
+bash deploy_cloudrun.sh
+
+# CI/CD via Cloud Build (triggered on push to main)
+# See cloudbuild.yaml
+```
+
+Set all environment variables as Cloud Run secrets. Data is stored in `$VAH_DATA_DIR` (mount a persistent volume or use Turso for cloud-synced SQLite).
 
 ---
 
-## HuggingFace Spaces Deployment
+## Evaluation
 
-Set these as **Space Secrets** (Settings → Repository secrets):
+`eval/` contains a video quality evaluation framework with 6 metrics: prompt adherence, temporal consistency, visual defects, audio alignment, narrative coherence, and cost/latency. Run with:
 
+```bash
+python -m eval.runner --project-id <id>
 ```
-ANTHROPIC_API_KEY
-FAL_KEY
-GOOGLE_CLIENT_ID
-GOOGLE_CLIENT_SECRET
-STRIPE_SECRET_KEY
-STRIPE_WEBHOOK_SECRET
-REPLICATE_API_TOKEN   # optional, for background music
-SESSION_SECRET        # any random string
-```
-
-Data is stored in `/data` (Docker volume). The app auto-seeds the brand kit on startup.
